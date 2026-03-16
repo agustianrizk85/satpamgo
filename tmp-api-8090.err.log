@@ -1,0 +1,11 @@
+=8090 : The term '=8090' is not recognized as the name of a cmdlet, function, script file, or operable program. Check 
+the spelling of the name, or if a path was included, verify that the path is correct and try again.
+At line:1 char:94
++ ... st\OneDrive\Desktop\Kerjaa\Azka\SatpamApi\satpam-go'; ='8090'; go run ...
++                                                           ~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (=8090:String) [], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 
+2026/03/15 06:15:17 satpam-go listening on http://localhost:8080
+2026/03/15 06:15:17 listen: listen tcp :8080: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+exit status 1
