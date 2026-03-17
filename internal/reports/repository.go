@@ -211,7 +211,10 @@ func (r *Repository) queryAttendance(ctx context.Context, filters AttendanceFilt
 	sql := fmt.Sprintf(`
 		select
 			a.id, a.place_id, p.place_name, a.user_id, u.full_name, a.assignment_id, a.shift_id, s.name as shift_name,
-			a.attendance_date::text, a.check_in_at::text, a.check_out_at::text, a.status,
+			a.attendance_date::text,
+			case when a.check_in_at is null then null else to_char(a.check_in_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') end,
+			case when a.check_out_at is null then null else to_char(a.check_out_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') end,
+			a.status,
 			case
 				when a.check_in_at is null or s.start_time is null then null
 				else greatest(
@@ -222,7 +225,8 @@ func (r *Repository) queryAttendance(ctx context.Context, filters AttendanceFilt
 			a.note,
 			coalesce(a.check_in_photo_url, a.photo_url) as check_in_photo_url,
 			a.check_out_photo_url,
-			a.created_at::text, a.updated_at::text,
+			to_char(a.created_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			to_char(a.updated_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
 			count(*) over()::int as total_count
 		from attendances a
 		join users u on u.id = a.user_id
@@ -231,7 +235,7 @@ func (r *Repository) queryAttendance(ctx context.Context, filters AttendanceFilt
 		%s
 		order by %s %s, a.id asc
 		%s
-	`, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
+	`, tzArg, tzArg, tzArg, tzArg, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
 
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -466,13 +470,24 @@ func (r *Repository) queryFacilityScans(ctx context.Context, filters FacilitySca
 	whereSQL, args := buildFacilityScanWhere(filters)
 	limitOffset := ""
 	if paged {
-		args = append(args, query.PageSize, query.Offset)
+		args = append(args, defaultAttendanceTimezone, query.PageSize, query.Offset)
 		limitOffset = fmt.Sprintf(" limit $%d offset $%d", len(args)-1, len(args))
+	} else {
+		args = append(args, defaultAttendanceTimezone)
+	}
+	tzArg := fmt.Sprintf("$%d", len(args)-2)
+	if !paged {
+		tzArg = fmt.Sprintf("$%d", len(args))
 	}
 	sql := fmt.Sprintf(`
 		select
 			fs.id, fs.place_id, p.place_name, fs.spot_id, sp.spot_code, sp.spot_name, fs.item_id, i.item_name, fs.user_id, u.full_name,
-			fs.scanned_at::text, fs.status, fs.note, fs.created_at::text, fs.updated_at::text, count(*) over()::int as total_count
+			to_char(fs.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			fs.status,
+			fs.note,
+			to_char(fs.created_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			to_char(fs.updated_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			count(*) over()::int as total_count
 		from facility_check_scans fs
 		join users u on u.id = fs.user_id
 		join places p on p.id = fs.place_id
@@ -481,7 +496,7 @@ func (r *Repository) queryFacilityScans(ctx context.Context, filters FacilitySca
 		%s
 		order by %s %s, fs.id asc
 		%s
-	`, whereSQL, sortColumn, sortDirection, limitOffset)
+	`, tzArg, tzArg, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, 0, err

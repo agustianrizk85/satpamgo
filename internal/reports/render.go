@@ -247,20 +247,21 @@ func renderPatrolDetailPages(pdf *gofpdf.Fpdf, input patrolPDFInput) {
 }
 
 func renderAttendanceCard(pdf *gofpdf.Fpdf, row AttendanceReportRow, storageRoot string, x, y, w, h float64) {
-	pdf.SetDrawColor(155, 155, 155)
+	pdf.SetLineWidth(0.18)
+	pdf.SetDrawColor(190, 196, 204)
 	pdf.Rect(x, y, w, h, "D")
-	pdf.SetFillColor(28, 79, 132)
-	pdf.Rect(x, y, w, 8, "F")
+	pdf.SetFillColor(41, 92, 145)
+	pdf.Rect(x, y, w, 7, "F")
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont("Arial", "B", 9)
-	pdf.SetXY(x, y+1.3)
+	pdf.SetFont("Arial", "B", 8.6)
+	pdf.SetXY(x, y+1.1)
 	pdf.CellFormat(w, 4.5, buildAttendanceCardTitle(row), "", 0, "C", false, 0, "")
 
 	pdf.SetTextColor(30, 30, 30)
 	labelX := x + 3
 	valueX := x + 28
-	currentY := y + 14
-	rowGap := 7.2
+	currentY := y + 13
+	rowGap := 6.9
 	renderLabelValue(pdf, labelX, valueX, currentY, "Nama", row.FullName)
 	currentY += rowGap
 	renderLabelValue(pdf, labelX, valueX, currentY, "Place", row.PlaceName)
@@ -278,10 +279,10 @@ func renderAttendanceCard(pdf *gofpdf.Fpdf, row AttendanceReportRow, storageRoot
 	renderNotes(pdf, labelX, valueX, currentY, "Catatan", deref(row.Note), 70)
 
 	imageX := x + 120
-	imageY := y + 17
-	boxW := 34.5
-	boxH := 24.5
-	gap := 5.5
+	imageY := y + 16
+	boxW := 33.5
+	boxH := 23.5
+	gap := 5.0
 	renderImageBox(pdf, storageRoot, deref(row.CheckInPhotoURL), imageX, imageY, boxW, boxH, "Check In")
 	renderImageBox(pdf, storageRoot, deref(row.CheckOutPhotoURL), imageX+boxW+gap, imageY, boxW, boxH, "Check Out")
 }
@@ -306,11 +307,14 @@ func renderNotes(pdf *gofpdf.Fpdf, labelX, valueX, y float64, label, value strin
 
 func renderImageBox(pdf *gofpdf.Fpdf, storageRoot, photoURL string, x, y, w, h float64, label string) {
 	pdf.SetTextColor(35, 35, 35)
-	pdf.SetFont("Arial", "B", 7)
+	pdf.SetFont("Arial", "B", 6.8)
 	pdf.SetXY(x, y-4.5)
 	pdf.CellFormat(w, 4, label, "", 0, "C", false, 0, "")
-	pdf.SetDrawColor(120, 120, 120)
+	pdf.SetLineWidth(0.16)
+	pdf.SetDrawColor(194, 200, 208)
 	pdf.Rect(x, y, w, h, "D")
+	pdf.SetFillColor(248, 250, 252)
+	pdf.Rect(x+0.25, y+0.25, w-0.5, h-0.5, "F")
 
 	imageName, imageType, imageReader, err := prepareReportImage(storageRoot, photoURL)
 	if err != nil || imageReader == nil {
@@ -334,12 +338,17 @@ func renderImageBox(pdf *gofpdf.Fpdf, storageRoot, photoURL string, x, y, w, h f
 
 	iw := info.Width()
 	ih := info.Height()
-	scale := minFloat(w/iw, h/ih)
+	innerPadding := 1.2
+	frameW := maxFloat(w-innerPadding*2, 1)
+	frameH := maxFloat(h-innerPadding*2, 1)
+	scale := minFloat(frameW/iw, frameH/ih)
 	drawW := iw * scale
 	drawH := ih * scale
-	drawX := x + (w-drawW)/2
-	drawY := y + (h-drawH)/2
+	drawX := x + innerPadding + (frameW-drawW)/2
+	drawY := y + innerPadding + (frameH-drawH)/2
+	pdf.ClipRect(x+innerPadding, y+innerPadding, frameW, frameH, false)
 	pdf.ImageOptions(imageName, drawX, drawY, drawW, drawH, false, options, 0, "")
+	pdf.ClipEnd()
 }
 
 type patrolGroup struct {
@@ -371,13 +380,14 @@ func groupPatrolRows(rows []PatrolScanReportRow) []patrolGroup {
 
 func renderPatrolGroupFrame(pdf *gofpdf.Fpdf, title string) {
 	addAttendanceWatermark(pdf)
-	pdf.SetDrawColor(150, 150, 150)
+	pdf.SetLineWidth(0.18)
+	pdf.SetDrawColor(190, 196, 204)
 	pdf.Rect(10, 10, 190, 267, "D")
-	pdf.SetFillColor(28, 79, 132)
-	pdf.Rect(10, 10, 190, 8, "F")
+	pdf.SetFillColor(41, 92, 145)
+	pdf.Rect(10, 10, 190, 7, "F")
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont("Arial", "B", 8.8)
-	pdf.SetXY(10, 11.2)
+	pdf.SetFont("Arial", "B", 8.2)
+	pdf.SetXY(10, 10.9)
 	pdf.CellFormat(190, 4, title, "", 0, "C", false, 0, "")
 }
 
@@ -414,14 +424,16 @@ func renderPatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoo
 	)
 
 	pdf.SetDrawColor(150, 150, 150)
+	pdf.SetLineWidth(0.18)
 	pdf.Rect(x, y, w, blockHeight, "D")
 	pdf.Rect(x, y, w, topBandH, "D")
 	pdf.SetTextColor(40, 40, 40)
-	pdf.SetFont("Arial", "B", 10)
-	pdf.SetXY(x, y+2)
+	pdf.SetFont("Arial", "B", 9.2)
+	pdf.SetXY(x, y+2.1)
 	pdf.CellFormat(w, 4, extractTimeForPatrol(row.ScannedAt), "", 0, "C", false, 0, "")
 
 	contentY := y + topBandH + padding
+	pdf.SetDrawColor(194, 200, 208)
 	pdf.Rect(x, contentY, imageW, imageH, "D")
 	imageName, imageType, imageReader, err := prepareReportImage(storageRoot, deref(row.PhotoURL))
 	if err == nil && imageReader != nil {
@@ -429,12 +441,17 @@ func renderPatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoo
 		pdf.RegisterImageOptionsReader(imageName, options, imageReader)
 		info := pdf.GetImageInfo(imageName)
 		if info != nil && info.Width() > 0 && info.Height() > 0 {
-			scale := minFloat(imageW/info.Width(), imageH/info.Height())
+			innerPadding := 1.2
+			frameW := maxFloat(imageW-innerPadding*2, 1)
+			frameH := maxFloat(imageH-innerPadding*2, 1)
+			scale := minFloat(frameW/info.Width(), frameH/info.Height())
 			drawW := info.Width() * scale
 			drawH := info.Height() * scale
-			drawX := x + (imageW-drawW)/2
-			drawY := contentY + (imageH-drawH)/2
+			drawX := x + innerPadding + (frameW-drawW)/2
+			drawY := contentY + innerPadding + (frameH-drawH)/2
+			pdf.ClipRect(x+innerPadding, contentY+innerPadding, frameW, frameH, false)
 			pdf.ImageOptions(imageName, drawX, drawY, drawW, drawH, false, options, 0, "")
+			pdf.ClipEnd()
 		}
 	}
 
