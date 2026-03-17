@@ -19,6 +19,34 @@ func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
 	return &Handler{repo: repo, authRepo: authRepo}
 }
 
+func (h *Handler) ensurePlaceAdminAccess(r *http.Request) (*auth.AuthContext, bool, error) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		return nil, false, nil
+	}
+	if auth.IsSuperUserRole(current.Role) {
+		return &current, true, nil
+	}
+
+	hasPlaceRole, err := h.authRepo.HasAnyPlaceRole(r.Context(), current.UserID, []string{placeRoleAdmin})
+	if err != nil {
+		return &current, false, err
+	}
+	if !hasPlaceRole {
+		return &current, false, nil
+	}
+
+	return &current, true, nil
+}
+
+func (h *Handler) ensureScopedTargetAccess(r *http.Request, current *auth.AuthContext, userID string) error {
+	_, err := h.repo.FindByID(r.Context(), ListUsersParams{
+		ActorUserID: current.UserID,
+		ActorRole:   current.Role,
+	}, userID)
+	return err
+}
+
 func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -105,8 +133,16 @@ func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
-	current, ok := auth.AuthFromContext(r.Context())
-	if !ok || !auth.IsSuperUserRole(current.Role) {
+	current, allowed, err := h.ensurePlaceAdminAccess(r)
+	if current == nil {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+		return
+	}
+	if !allowed {
 		web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient global role")
 		return
 	}
@@ -138,6 +174,22 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !auth.IsSuperUserRole(current.Role) {
+		roleCode, err := h.repo.FindRoleCodeByID(r.Context(), body.RoleID)
+		if err != nil {
+			if errors.Is(err, ErrUserRoleNotFound) {
+				web.WriteError(w, http.StatusBadRequest, "Role not found")
+				return
+			}
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate role")
+			return
+		}
+		if isGlobalAdminRole(strings.ToUpper(strings.TrimSpace(roleCode))) {
+			web.WriteError(w, http.StatusForbidden, "Forbidden: place admin cannot create global users")
+			return
+		}
+	}
+
 	id, err := h.repo.Create(r.Context(), CreateInput{
 		RoleID:   body.RoleID,
 		FullName: body.FullName,
@@ -161,8 +213,16 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
-	current, ok := auth.AuthFromContext(r.Context())
-	if !ok || !auth.IsSuperUserRole(current.Role) {
+	current, allowed, err := h.ensurePlaceAdminAccess(r)
+	if current == nil {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+		return
+	}
+	if !allowed {
 		web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient global role")
 		return
 	}
@@ -171,6 +231,18 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 	if !web.IsUUID(userID) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid userId")
 		return
+	}
+
+	if !auth.IsSuperUserRole(current.Role) {
+		err := h.ensureScopedTargetAccess(r, current, userID)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				web.WriteError(w, http.StatusNotFound, "User not found")
+				return
+			}
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+			return
+		}
 	}
 
 	var body map[string]any
@@ -189,6 +261,22 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 		value = strings.TrimSpace(value)
 		input.RoleID = &value
+
+		if !auth.IsSuperUserRole(current.Role) {
+			roleCode, err := h.repo.FindRoleCodeByID(r.Context(), value)
+			if err != nil {
+				if errors.Is(err, ErrUserRoleNotFound) {
+					web.WriteError(w, http.StatusBadRequest, "Role not found")
+					return
+				}
+				web.WriteError(w, http.StatusInternalServerError, "Failed to validate role")
+				return
+			}
+			if isGlobalAdminRole(strings.ToUpper(strings.TrimSpace(roleCode))) {
+				web.WriteError(w, http.StatusForbidden, "Forbidden: place admin cannot assign global roles")
+				return
+			}
+		}
 	}
 	if raw, exists := body["fullName"]; exists {
 		value, ok := raw.(string)
@@ -252,8 +340,16 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
-	current, ok := auth.AuthFromContext(r.Context())
-	if !ok || !auth.IsSuperUserRole(current.Role) {
+	current, allowed, err := h.ensurePlaceAdminAccess(r)
+	if current == nil {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+		return
+	}
+	if !allowed {
 		web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient global role")
 		return
 	}
@@ -262,6 +358,18 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !web.IsUUID(userID) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid userId")
 		return
+	}
+
+	if !auth.IsSuperUserRole(current.Role) {
+		err := h.ensureScopedTargetAccess(r, current, userID)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				web.WriteError(w, http.StatusNotFound, "User not found")
+				return
+			}
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+			return
+		}
 	}
 
 	id, err := h.repo.SoftDelete(r.Context(), userID)

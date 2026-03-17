@@ -20,6 +20,42 @@ func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
 	return &Handler{repo: repo, authRepo: authRepo}
 }
 
+func (h *Handler) requirePlaceAdminAccess(w http.ResponseWriter, r *http.Request, placeID string) (auth.AuthContext, bool) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return auth.AuthContext{}, false
+	}
+	if auth.IsGlobalAdminRole(current.Role) {
+		return current, true
+	}
+	ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, placeID, []string{auth.PlaceRoleAdmin})
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+		return current, false
+	}
+	if !ok {
+		web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+		return current, false
+	}
+	return current, true
+}
+
+func (h *Handler) getItemPlaceID(r *http.Request, itemID string) (string, error) {
+	item, err := h.repo.GetItem(r.Context(), itemID)
+	if err != nil {
+		return "", err
+	}
+	spot, err := h.repo.GetSpot(r.Context(), item.SpotID)
+	if err != nil {
+		if errors.Is(err, ErrSpotNotFound) {
+			return "", ErrItemNotFound
+		}
+		return "", err
+	}
+	return spot.PlaceID, nil
+}
+
 func (h *Handler) ListSpots(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -67,9 +103,6 @@ func (h *Handler) GetSpot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateSpot(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var body struct {
 		PlaceID  string `json:"placeId"`
 		SpotCode string `json:"spotCode"`
@@ -82,6 +115,9 @@ func (h *Handler) CreateSpot(w http.ResponseWriter, r *http.Request) {
 	}
 	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || strings.TrimSpace(body.SpotCode) == "" || strings.TrimSpace(body.SpotName) == "" {
 		web.WriteError(w, http.StatusBadRequest, "placeId, spotCode, and spotName are required")
+		return
+	}
+	if _, ok := h.requirePlaceAdminAccess(w, r, strings.TrimSpace(body.PlaceID)); !ok {
 		return
 	}
 	isActive := true
@@ -97,12 +133,18 @@ func (h *Handler) CreateSpot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PatchSpot(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("spotId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid spotId")
+		return
+	}
+	currentSpot, err := h.repo.GetSpot(r.Context(), id)
+	if err != nil {
+		h.writeFacilityError(w, err, "Failed to load facility spot", "")
+		return
+	}
+	current, ok := h.requirePlaceAdminAccess(w, r, currentSpot.PlaceID)
+	if !ok {
 		return
 	}
 	var body map[string]any
@@ -119,6 +161,12 @@ func (h *Handler) PatchSpot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v := strings.TrimSpace(value)
+		if !auth.IsGlobalAdminRole(current.Role) && v != currentSpot.PlaceID {
+			_, ok := h.requirePlaceAdminAccess(w, r, v)
+			if !ok {
+				return
+			}
+		}
 		placeID = &v
 	}
 	if raw, exists := body["spotCode"]; exists {
@@ -156,12 +204,17 @@ func (h *Handler) PatchSpot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteSpot(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("spotId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid spotId")
+		return
+	}
+	currentSpot, err := h.repo.GetSpot(r.Context(), id)
+	if err != nil {
+		h.writeFacilityError(w, err, "Failed to load facility spot", "")
+		return
+	}
+	if _, ok := h.requirePlaceAdminAccess(w, r, currentSpot.PlaceID); !ok {
 		return
 	}
 	out, err := h.repo.DeleteSpot(r.Context(), id)
@@ -214,9 +267,6 @@ func (h *Handler) GetItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateItem(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var body struct {
 		SpotID     string  `json:"spotId"`
 		ItemName   string  `json:"itemName"`
@@ -231,6 +281,14 @@ func (h *Handler) CreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if !web.IsUUID(strings.TrimSpace(body.SpotID)) || strings.TrimSpace(body.ItemName) == "" {
 		web.WriteError(w, http.StatusBadRequest, "spotId and itemName are required")
+		return
+	}
+	spot, err := h.repo.GetSpot(r.Context(), strings.TrimSpace(body.SpotID))
+	if err != nil {
+		h.writeFacilityError(w, err, "Failed to load facility spot", "")
+		return
+	}
+	if _, ok := h.requirePlaceAdminAccess(w, r, spot.PlaceID); !ok {
 		return
 	}
 	isRequired := true
@@ -254,12 +312,18 @@ func (h *Handler) CreateItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PatchItem(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("itemId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid itemId")
+		return
+	}
+	currentPlaceID, err := h.getItemPlaceID(r, id)
+	if err != nil {
+		h.writeFacilityError(w, err, "Failed to load facility item", "")
+		return
+	}
+	current, ok := h.requirePlaceAdminAccess(w, r, currentPlaceID)
+	if !ok {
 		return
 	}
 	var body map[string]any
@@ -277,6 +341,18 @@ func (h *Handler) PatchItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v := strings.TrimSpace(value)
+		if !auth.IsGlobalAdminRole(current.Role) {
+			targetSpot, err := h.repo.GetSpot(r.Context(), v)
+			if err != nil {
+				h.writeFacilityError(w, err, "Failed to load facility spot", "")
+				return
+			}
+			if targetSpot.PlaceID != currentPlaceID {
+				if _, ok := h.requirePlaceAdminAccess(w, r, targetSpot.PlaceID); !ok {
+					return
+				}
+			}
+		}
 		spotID = &v
 	}
 	if raw, exists := body["itemName"]; exists {
@@ -335,12 +411,17 @@ func (h *Handler) PatchItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteItem(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("itemId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid itemId")
+		return
+	}
+	currentPlaceID, err := h.getItemPlaceID(r, id)
+	if err != nil {
+		h.writeFacilityError(w, err, "Failed to load facility item", "")
+		return
+	}
+	if _, ok := h.requirePlaceAdminAccess(w, r, currentPlaceID); !ok {
 		return
 	}
 	out, err := h.repo.DeleteItem(r.Context(), id)

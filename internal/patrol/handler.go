@@ -20,6 +20,27 @@ func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
 	return &Handler{repo: repo, authRepo: authRepo}
 }
 
+func (h *Handler) requirePlaceAdminAccess(w http.ResponseWriter, r *http.Request, placeID string) bool {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return false
+	}
+	if auth.IsGlobalAdminRole(current.Role) {
+		return true
+	}
+	ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, placeID, []string{auth.PlaceRoleAdmin})
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+		return false
+	}
+	if !ok {
+		web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) ListRoutePoints(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -45,9 +66,6 @@ func (h *Handler) ListRoutePoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateRoutePoint(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var body struct {
 		PlaceID  string `json:"placeId"`
 		SpotID   string `json:"spotId"`
@@ -60,6 +78,9 @@ func (h *Handler) CreateRoutePoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || body.Seq < 1 {
 		web.WriteError(w, http.StatusBadRequest, "placeId, spotId, and seq are required")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, strings.TrimSpace(body.PlaceID)) {
 		return
 	}
 	isActive := true
@@ -82,13 +103,13 @@ func (h *Handler) CreateRoutePoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteRoutePoint(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	placeID := strings.TrimSpace(r.URL.Query().Get("placeId"))
 	if !web.IsUUID(id) || !web.IsUUID(placeID) {
 		web.WriteError(w, http.StatusBadRequest, "id and placeId are required")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, placeID) {
 		return
 	}
 	out, err := h.repo.DeleteRoutePoint(r.Context(), id, placeID)
@@ -163,27 +184,6 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.WriteJSON(w, http.StatusCreated, map[string]string{"id": id})
-}
-
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	current, ok := auth.AuthFromContext(r.Context())
-	if !ok {
-		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
-		return false
-	}
-	if auth.IsGlobalAdminRole(current.Role) {
-		return true
-	}
-	ok, err := h.authRepo.HasAnyPlaceRole(r.Context(), current.UserID, []string{auth.PlaceRoleAdmin})
-	if err != nil {
-		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
-		return false
-	}
-	if !ok {
-		web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient global role")
-		return false
-	}
-	return true
 }
 
 func trimStringPtr(value *string) *string {

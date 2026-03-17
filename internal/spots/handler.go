@@ -49,9 +49,6 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	var body struct {
 		PlaceID   string   `json:"placeId"`
 		SpotCode  string   `json:"spotCode"`
@@ -72,6 +69,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if !web.IsUUID(body.PlaceID) || body.SpotCode == "" || body.SpotName == "" || status == "" {
 		web.WriteError(w, http.StatusBadRequest, "placeId, spotCode, spotName are required and status must be ACTIVE or INACTIVE")
 		return
+	}
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	if !auth.IsGlobalAdminRole(current.Role) {
+		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, body.PlaceID, []string{auth.PlaceRoleAdmin})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+			return
+		}
+		if !ok {
+			web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+			return
+		}
 	}
 	id, err := h.repo.Create(r.Context(), CreateInput{
 		PlaceID:   body.PlaceID,
@@ -119,13 +132,35 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Patch(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("spotId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid spotId")
 		return
+	}
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	currentSpot, err := h.repo.FindByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Spot not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load spot")
+		return
+	}
+	if !auth.IsGlobalAdminRole(current.Role) {
+		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, currentSpot.PlaceID, []string{auth.PlaceRoleAdmin})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+			return
+		}
+		if !ok {
+			web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+			return
+		}
 	}
 	var body map[string]any
 	if err := web.DecodeJSON(r, &body); err != nil {
@@ -140,6 +175,17 @@ func (h *Handler) Patch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		value = strings.TrimSpace(value)
+		if !auth.IsGlobalAdminRole(current.Role) && value != currentSpot.PlaceID {
+			ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, value, []string{auth.PlaceRoleAdmin})
+			if err != nil {
+				web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+				return
+			}
+			if !ok {
+				web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+				return
+			}
+		}
 		input.PlaceID = &value
 	}
 	if raw, exists := body["spotCode"]; exists {
@@ -233,13 +279,35 @@ func (h *Handler) Patch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	id := r.PathValue("spotId")
 	if !web.IsUUID(id) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid spotId")
 		return
+	}
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	item, err := h.repo.FindByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Spot not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load spot")
+		return
+	}
+	if !auth.IsGlobalAdminRole(current.Role) {
+		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, item.PlaceID, []string{auth.PlaceRoleAdmin})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
+			return
+		}
+		if !ok {
+			web.WriteError(w, http.StatusForbidden, "Forbidden: no access to this place")
+			return
+		}
 	}
 	out, err := h.repo.SoftDelete(r.Context(), id)
 	if err != nil {
@@ -251,27 +319,6 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, map[string]string{"id": out})
-}
-
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	current, ok := auth.AuthFromContext(r.Context())
-	if !ok {
-		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
-		return false
-	}
-	if auth.IsGlobalAdminRole(current.Role) {
-		return true
-	}
-	ok, err := h.authRepo.HasAnyPlaceRole(r.Context(), current.UserID, []string{auth.PlaceRoleAdmin})
-	if err != nil {
-		web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
-		return false
-	}
-	if !ok {
-		web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient global role")
-		return false
-	}
-	return true
 }
 
 func normalizeStatus(value string) string {

@@ -235,6 +235,25 @@ func (r *Repository) FindByID(ctx context.Context, params ListUsersParams, userI
 	return &item, nil
 }
 
+func (r *Repository) FindRoleCodeByID(ctx context.Context, roleID string) (string, error) {
+	const sql = `
+		select code
+		from roles
+		where id = $1
+		limit 1
+	`
+
+	var code string
+	if err := r.db.QueryRow(ctx, sql, roleID).Scan(&code); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrUserRoleNotFound
+		}
+		return "", err
+	}
+
+	return strings.TrimSpace(code), nil
+}
+
 func (r *Repository) Create(ctx context.Context, input CreateInput) (string, error) {
 	const sql = `
 		insert into users (role_id, full_name, username, password_hash, status)
