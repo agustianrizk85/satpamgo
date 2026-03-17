@@ -13,10 +13,11 @@ import (
 type Handler struct {
 	repo     *Repository
 	authRepo *auth.Repository
+	storageRoot string
 }
 
-func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
-	return &Handler{repo: repo, authRepo: authRepo}
+func NewHandler(repo *Repository, authRepo *auth.Repository, storageRoot string) *Handler {
+	return &Handler{repo: repo, authRepo: authRepo, storageRoot: storageRoot}
 }
 
 func (h *Handler) ListAttendance(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +266,26 @@ func (h *Handler) downloadAttendance(w http.ResponseWriter, r *http.Request) {
 		"Sick: " + stringifyInt(summary.SickCount),
 		"Leave: " + stringifyInt(summary.LeaveCount),
 	}
+	if format == "pdf" {
+		content, err := renderAttendancePDF(attendancePDFInput{
+			Title:       "Laporan Absensi",
+			PlaceName:   resolveAttendancePlaceName(filters, rows),
+			FromDate:    filters.FromDate,
+			ToDate:      filters.ToDate,
+			GeneratedBy: current.UserID,
+			Rows:        rows,
+			StorageRoot: h.storageRoot,
+		})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to generate PDF report")
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename("attendance-report", "pdf")+`"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+		return
+	}
 	h.writeDownload(w, format, "attendance-report", "Attendance Report", headers, body, summaryLines)
 }
 
@@ -297,6 +318,26 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 		"Unique Patrol Runs: " + stringifyInt(summary.UniquePatrolRuns),
 		"Unique Spots: " + stringifyInt(summary.UniqueSpots),
 		"Unique Users: " + stringifyInt(summary.UniqueUsers),
+	}
+	if format == "pdf" {
+		content, err := renderPatrolPDF(patrolPDFInput{
+			Title:       "Laporan Patrol Scan",
+			PlaceName:   resolvePatrolPlaceName(filters, rows),
+			FromDate:    filters.FromDate,
+			ToDate:      filters.ToDate,
+			GeneratedBy: current.UserID,
+			Rows:        rows,
+			StorageRoot: h.storageRoot,
+		})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to generate PDF report")
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename("patrol-scan-report", "pdf")+`"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+		return
 	}
 	h.writeDownload(w, format, "patrol-scan-report", "Patrol Scan Report", headers, body, summaryLines)
 }
@@ -369,6 +410,52 @@ func derefInt(value *int) string {
 		return ""
 	}
 	return stringifyInt(*value)
+}
+
+func resolveAttendancePlaceName(filters AttendanceFilters, rows []AttendanceReportRow) string {
+	if len(rows) == 1 {
+		return strings.TrimSpace(rows[0].PlaceName)
+	}
+	if len(rows) > 1 {
+		name := strings.TrimSpace(rows[0].PlaceName)
+		same := name != ""
+		for _, row := range rows[1:] {
+			if strings.TrimSpace(row.PlaceName) != name {
+				same = false
+				break
+			}
+		}
+		if same {
+			return name
+		}
+	}
+	if strings.TrimSpace(filters.PlaceID) != "" {
+		return filters.PlaceID
+	}
+	return "Semua Place"
+}
+
+func resolvePatrolPlaceName(filters PatrolScanFilters, rows []PatrolScanReportRow) string {
+	if len(rows) == 1 {
+		return strings.TrimSpace(rows[0].PlaceName)
+	}
+	if len(rows) > 1 {
+		name := strings.TrimSpace(rows[0].PlaceName)
+		same := name != ""
+		for _, row := range rows[1:] {
+			if strings.TrimSpace(row.PlaceName) != name {
+				same = false
+				break
+			}
+		}
+		if same {
+			return name
+		}
+	}
+	if strings.TrimSpace(filters.PlaceID) != "" {
+		return filters.PlaceID
+	}
+	return "Semua Place"
 }
 
 func isDateOnly(v string) bool {

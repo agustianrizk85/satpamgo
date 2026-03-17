@@ -76,7 +76,7 @@ func main() {
 	facilityHandler := facility.NewHandler(facilityRepo, authRepo)
 	mediaHandler := media.NewHandler(mediaService, cfg.UploadMaxBytes)
 	recentActivitiesHandler := recentactivities.NewHandler(recentActivitiesRepo, authRepo)
-	reportHandler := reports.NewHandler(reportRepo, authRepo)
+	reportHandler := reports.NewHandler(reportRepo, authRepo, cfg.StorageRoot)
 
 	if err := mediaService.CleanupAttendanceExpired(time.Now()); err != nil {
 		log.Printf("cleanup attendance photos: %v", err)
