@@ -229,34 +229,18 @@ func renderPatrolDetailPages(pdf *gofpdf.Fpdf, input patrolPDFInput) {
 	groups := groupPatrolRows(input.Rows)
 	for _, group := range groups {
 		pdf.AddPage()
-		addAttendanceWatermark(pdf)
-		pdf.SetDrawColor(150, 150, 150)
-		pdf.Rect(10, 10, 190, 267, "D")
-		pdf.SetFillColor(28, 79, 132)
-		pdf.Rect(10, 10, 190, 8, "F")
-		pdf.SetTextColor(255, 255, 255)
-		pdf.SetFont("Arial", "B", 8.8)
-		pdf.SetXY(10, 11.2)
-		pdf.CellFormat(190, 4, group.title, "", 0, "C", false, 0, "")
+		renderPatrolGroupFrame(pdf, group.title)
 
 		currentY := 20.0
 		for _, row := range group.rows {
-			blockHeight := 59.0
+			blockHeight := measurePatrolScanBlock(pdf, row, 186)
 			if currentY+blockHeight > 272 {
 				pdf.AddPage()
-				addAttendanceWatermark(pdf)
-				pdf.SetDrawColor(150, 150, 150)
-				pdf.Rect(10, 10, 190, 267, "D")
-				pdf.SetFillColor(28, 79, 132)
-				pdf.Rect(10, 10, 190, 8, "F")
-				pdf.SetTextColor(255, 255, 255)
-				pdf.SetFont("Arial", "B", 8.8)
-				pdf.SetXY(10, 11.2)
-				pdf.CellFormat(190, 4, group.title, "", 0, "C", false, 0, "")
+				renderPatrolGroupFrame(pdf, group.title)
 				currentY = 20
 			}
-			renderPatrolScanBlock(pdf, row, input.StorageRoot, 12, currentY, 186)
-			currentY += blockHeight
+			renderPatrolScanBlock(pdf, row, input.StorageRoot, 12, currentY, 186, blockHeight)
+			currentY += blockHeight + 2
 		}
 	}
 }
@@ -384,17 +368,59 @@ func groupPatrolRows(rows []PatrolScanReportRow) []patrolGroup {
 	return result
 }
 
-func renderPatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoot string, x, y, w float64) {
+func renderPatrolGroupFrame(pdf *gofpdf.Fpdf, title string) {
+	addAttendanceWatermark(pdf)
 	pdf.SetDrawColor(150, 150, 150)
-	pdf.Rect(x, y, w, 9, "D")
+	pdf.Rect(10, 10, 190, 267, "D")
+	pdf.SetFillColor(28, 79, 132)
+	pdf.Rect(10, 10, 190, 8, "F")
+	pdf.SetTextColor(255, 255, 255)
+	pdf.SetFont("Arial", "B", 8.8)
+	pdf.SetXY(10, 11.2)
+	pdf.CellFormat(190, 4, title, "", 0, "C", false, 0, "")
+}
+
+func measurePatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, w float64) float64 {
+	const (
+		imageH     = 33.0
+		imageW     = 46.0
+		topBandH   = 9.0
+		padding    = 2.0
+		lineHeight = 5.0
+	)
+
+	infoX := imageW + 4
+	infoW := w - infoX - 2
+	valueW := infoW - 28
+	infoHeight := maxFloat(
+		measureWrappedLabelValue(pdf, "Scanned At", formatDateTimeLabel(row.ScannedAt), valueW, lineHeight),
+		measureWrappedLabelValue(pdf, "Run ID", row.PatrolRunID, valueW, lineHeight)+
+			measureWrappedLabelValue(pdf, "Spot", safeText(row.SpotName, "-")+" ("+safeText(row.SpotCode, "-")+")", valueW, lineHeight)+
+			measureWrappedLabelValue(pdf, "Nama User", row.FullName, valueW, lineHeight),
+	)
+	contentH := maxFloat(imageH, infoHeight) + padding*2
+	noteH := measureWrappedLabelValue(pdf, "Note", deref(row.Note), w-20, lineHeight)
+	return topBandH + contentH + 9 + noteH + 6
+}
+
+func renderPatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoot string, x, y, w, blockHeight float64) {
+	const (
+		topBandH   = 9.0
+		padding    = 2.0
+		imageW     = 46.0
+		imageH     = 33.0
+		lineHeight = 5.0
+	)
+
+	pdf.SetDrawColor(150, 150, 150)
+	pdf.Rect(x, y, w, blockHeight, "D")
+	pdf.Rect(x, y, w, topBandH, "D")
 	pdf.SetTextColor(40, 40, 40)
 	pdf.SetFont("Arial", "B", 10)
 	pdf.SetXY(x, y+2)
 	pdf.CellFormat(w, 4, extractTimeForPatrol(row.ScannedAt), "", 0, "C", false, 0, "")
 
-	contentY := y + 11
-	imageW := 50.0
-	imageH := 33.0
+	contentY := y + topBandH + padding
 	pdf.Rect(x, contentY, imageW, imageH, "D")
 	imageName, imageType, imageReader, err := prepareReportImage(storageRoot, deref(row.PhotoURL))
 	if err == nil && imageReader != nil {
@@ -411,24 +437,45 @@ func renderPatrolScanBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoo
 		}
 	}
 
-	infoX := x + 52
-	infoY := contentY + 6
-	renderLabelValue(pdf, infoX, infoX+28, infoY, "Scanned At", formatDateTimeLabel(row.ScannedAt))
-	infoY += 8
-	renderLabelValue(pdf, infoX, infoX+28, infoY, "Run ID", row.PatrolRunID)
-	infoY += 8
-	renderLabelValue(pdf, infoX, infoX+28, infoY, "Spot", safeText(row.SpotName, "-")+" ("+safeText(row.SpotCode, "-")+")")
-	infoY += 8
-	renderLabelValue(pdf, infoX, infoX+28, infoY, "Nama User", row.FullName)
+	infoX := x + imageW + 4
+	infoY := contentY + 1
+	infoW := w - (infoX - x) - 2
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Scanned At", formatDateTimeLabel(row.ScannedAt))
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Run ID", row.PatrolRunID)
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Spot", safeText(row.SpotName, "-")+" ("+safeText(row.SpotCode, "-")+")")
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Nama User", row.FullName)
 
-	metaY := contentY + imageH + 2
+	contentH := maxFloat(imageH, infoY-contentY) + padding
+	metaY := contentY + contentH
 	pdf.Rect(x, metaY, w, 9, "D")
 	renderLabelValue(pdf, x+2, x+22, metaY+5.7, "Photo", "Available")
 	if strings.TrimSpace(deref(row.PhotoURL)) == "" {
 		renderLabelValue(pdf, x+2, x+22, metaY+5.7, "Photo", "Not Available")
 	}
-	pdf.Rect(x, metaY+9, w, 9, "D")
-	renderLabelValue(pdf, x+2, x+22, metaY+14.7, "Note", deref(row.Note))
+	noteY := metaY + 9
+	noteH := renderWrappedLabelValue(pdf, x+2, noteY+2, 18, w-20, lineHeight, "Note", deref(row.Note))
+	pdf.Rect(x, noteY, w, noteH+4, "D")
+}
+
+func renderWrappedLabelValue(pdf *gofpdf.Fpdf, x, y, labelW, valueW, lineHeight float64, label, value string) float64 {
+	height := measureWrappedLabelValue(pdf, label, value, valueW, lineHeight)
+	pdf.SetTextColor(25, 25, 25)
+	pdf.SetFont("Arial", "B", 8.8)
+	pdf.Text(x, y+3.6, label)
+	pdf.Text(x+labelW-4, y+3.6, ":")
+	pdf.SetXY(x+labelW, y)
+	pdf.SetFont("Arial", "", 8.6)
+	pdf.MultiCell(valueW, lineHeight, safeText(value, "-"), "", "L", false)
+	return height
+}
+
+func measureWrappedLabelValue(pdf *gofpdf.Fpdf, label, value string, valueW, lineHeight float64) float64 {
+	pdf.SetFont("Arial", "", 8.6)
+	lines := pdf.SplitLines([]byte(safeText(value, "-")), valueW)
+	if len(lines) == 0 {
+		return lineHeight
+	}
+	return float64(len(lines)) * lineHeight
 }
 
 func extractTimeForPatrol(value string) string {
@@ -556,6 +603,13 @@ func safeText(value, fallback string) string {
 
 func minFloat(a, b float64) float64 {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
 		return a
 	}
 	return b
