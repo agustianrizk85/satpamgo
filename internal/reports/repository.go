@@ -341,13 +341,19 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 	whereSQL, args := buildPatrolScanWhere(filters)
 	limitOffset := ""
 	if paged {
-		args = append(args, query.PageSize, query.Offset)
+		args = append(args, defaultAttendanceTimezone, query.PageSize, query.Offset)
 		limitOffset = fmt.Sprintf(" limit $%d offset $%d", len(args)-1, len(args))
+	} else {
+		args = append(args, defaultAttendanceTimezone)
+	}
+	tzArg := fmt.Sprintf("$%d", len(args)-2)
+	if !paged {
+		tzArg = fmt.Sprintf("$%d", len(args))
 	}
 	sql := fmt.Sprintf(`
 		select
 			ps.id, ps.place_id, p.place_name, ps.user_id, u.full_name, ps.spot_id, s.spot_code, s.spot_name,
-			ps.patrol_run_id, ps.scanned_at::text, ps.photo_url, ps.note, count(*) over()::int as total_count
+			ps.patrol_run_id, to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'), ps.photo_url, ps.note, count(*) over()::int as total_count
 		from patrol_scans ps
 		join users u on u.id = ps.user_id
 		join places p on p.id = ps.place_id
@@ -355,7 +361,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 		%s
 		order by %s %s, ps.id asc
 		%s
-	`, whereSQL, sortColumn, sortDirection, limitOffset)
+	`, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, 0, err

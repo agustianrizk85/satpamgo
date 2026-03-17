@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/phpdave11/gofpdf"
 	"golang.org/x/image/webp"
@@ -479,6 +480,9 @@ func measureWrappedLabelValue(pdf *gofpdf.Fpdf, label, value string, valueW, lin
 }
 
 func extractTimeForPatrol(value string) string {
+	if ts, ok := parseReportTime(value); ok {
+		return ts.Format("15.04")
+	}
 	value = strings.TrimSpace(value)
 	if len(value) >= 16 {
 		return strings.ReplaceAll(value[11:16], ":", ".")
@@ -583,12 +587,53 @@ func formatDateTimeLabel(value string) string {
 	if value == "" {
 		return "-"
 	}
+	if ts, ok := parseReportTime(value); ok {
+		return ts.Format("02/01/2006, 15.04.05")
+	}
 	if len(value) >= 19 && value[4] == '-' && value[7] == '-' {
 		datePart := formatDateLabel(value[:10])
 		timePart := strings.NewReplacer(":", ".", "T", ", ").Replace(value[11:19])
 		return datePart + ", " + timePart
 	}
 	return value
+}
+
+func parseReportTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	location, err := time.LoadLocation(defaultAttendanceTimezone)
+	if err != nil {
+		location = time.Local
+	}
+	layouts := []struct {
+		layout string
+		local  bool
+	}{
+		{layout: time.RFC3339Nano},
+		{layout: time.RFC3339},
+		{layout: "2006-01-02 15:04:05.999999-07:00"},
+		{layout: "2006-01-02 15:04:05-07:00"},
+		{layout: "2006-01-02 15:04:05.999999Z07:00"},
+		{layout: "2006-01-02 15:04:05Z07:00"},
+		{layout: "2006-01-02 15:04:05", local: true},
+	}
+	for _, item := range layouts {
+		var ts time.Time
+		if item.local {
+			ts, err = time.ParseInLocation(item.layout, value, location)
+		} else {
+			ts, err = time.Parse(item.layout, value)
+			if err == nil {
+				ts = ts.In(location)
+			}
+		}
+		if err == nil {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func safeText(value, fallback string) string {
