@@ -148,11 +148,13 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		RoleID   string `json:"roleId"`
-		FullName string `json:"fullName"`
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Status   string `json:"status"`
+		RoleID      string `json:"roleId"`
+		FullName    string `json:"fullName"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		Status      string `json:"status"`
+		PlaceID     string `json:"placeId"`
+		PlaceRoleID string `json:"placeRoleId"`
 	}
 	if err := web.DecodeJSON(r, &body); err != nil {
 		web.WriteError(w, http.StatusBadRequest, "Invalid body")
@@ -163,6 +165,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	body.FullName = strings.TrimSpace(body.FullName)
 	body.Username = strings.TrimSpace(body.Username)
 	body.Password = strings.TrimSpace(body.Password)
+	body.PlaceID = strings.TrimSpace(body.PlaceID)
+	body.PlaceRoleID = strings.TrimSpace(body.PlaceRoleID)
 	body.Status = normalizeUserStatus(body.Status)
 
 	if !web.IsUUID(body.RoleID) || body.FullName == "" || body.Username == "" || body.Password == "" {
@@ -174,7 +178,30 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsSuperUserRole(current.Role) {
+	assignPlaceRole := body.PlaceID != "" || body.PlaceRoleID != ""
+	if auth.IsSuperUserRole(current.Role) {
+		if assignPlaceRole {
+			if !web.IsUUID(body.PlaceID) || !web.IsUUID(body.PlaceRoleID) {
+				web.WriteError(w, http.StatusBadRequest, "placeId and placeRoleId must be valid uuid")
+				return
+			}
+		}
+	} else {
+		if !web.IsUUID(body.PlaceID) || !web.IsUUID(body.PlaceRoleID) {
+			web.WriteError(w, http.StatusBadRequest, "placeId and placeRoleId are required for place admin")
+			return
+		}
+
+		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, body.PlaceID, []string{auth.PlaceRoleAdmin})
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "Failed to validate place access")
+			return
+		}
+		if !ok {
+			web.WriteError(w, http.StatusForbidden, "Forbidden: insufficient place access")
+			return
+		}
+
 		roleCode, err := h.repo.FindRoleCodeByID(r.Context(), body.RoleID)
 		if err != nil {
 			if errors.Is(err, ErrUserRoleNotFound) {
@@ -190,19 +217,36 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	id, err := h.repo.Create(r.Context(), CreateInput{
-		RoleID:   body.RoleID,
-		FullName: body.FullName,
-		Username: body.Username,
-		Password: body.Password,
-		Status:   body.Status,
-	})
+	var id string
+	if assignPlaceRole {
+		id, err = h.repo.CreateWithPlaceRole(r.Context(), CreateWithPlaceInput{
+			RoleID:      body.RoleID,
+			FullName:    body.FullName,
+			Username:    body.Username,
+			Password:    body.Password,
+			Status:      body.Status,
+			PlaceID:     body.PlaceID,
+			PlaceRoleID: body.PlaceRoleID,
+		})
+	} else {
+		id, err = h.repo.Create(r.Context(), CreateInput{
+			RoleID:   body.RoleID,
+			FullName: body.FullName,
+			Username: body.Username,
+			Password: body.Password,
+			Status:   body.Status,
+		})
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUsernameExists):
 			web.WriteError(w, http.StatusConflict, "Username already exists")
 		case errors.Is(err, ErrUserRoleNotFound):
-			web.WriteError(w, http.StatusBadRequest, "Role not found")
+			if assignPlaceRole {
+				web.WriteError(w, http.StatusBadRequest, "Role or place assignment not found")
+			} else {
+				web.WriteError(w, http.StatusBadRequest, "Role not found")
+			}
 		default:
 			web.WriteError(w, http.StatusInternalServerError, "Failed to create user")
 		}

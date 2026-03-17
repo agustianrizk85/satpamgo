@@ -46,6 +46,16 @@ type CreateInput struct {
 	Status   string
 }
 
+type CreateWithPlaceInput struct {
+	RoleID      string
+	FullName    string
+	Username    string
+	Password    string
+	Status      string
+	PlaceID     string
+	PlaceRoleID string
+}
+
 type UpdateInput struct {
 	RoleID   *string
 	FullName *string
@@ -283,6 +293,61 @@ func (r *Repository) Create(ctx context.Context, input CreateInput) (string, err
 	}
 
 	return id, nil
+}
+
+func (r *Repository) CreateWithPlaceRole(ctx context.Context, input CreateWithPlaceInput) (string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	const insertUserSQL = `
+		insert into users (role_id, full_name, username, password_hash, status)
+		values ($1, $2, $3, crypt($4, gen_salt('bf')), $5)
+		returning id
+	`
+
+	var userID string
+	err = tx.QueryRow(
+		ctx,
+		insertUserSQL,
+		input.RoleID,
+		strings.TrimSpace(input.FullName),
+		strings.TrimSpace(input.Username),
+		input.Password,
+		input.Status,
+	).Scan(&userID)
+	if err != nil {
+		switch {
+		case isPgCode(err, "23505"):
+			return "", ErrUsernameExists
+		case isPgCode(err, "23503"):
+			return "", ErrUserRoleNotFound
+		default:
+			return "", err
+		}
+	}
+
+	const insertPlaceRoleSQL = `
+		insert into user_place_roles (user_id, place_id, role_id, is_active)
+		values ($1, $2, $3, true)
+	`
+
+	if _, err := tx.Exec(ctx, insertPlaceRoleSQL, userID, input.PlaceID, input.PlaceRoleID); err != nil {
+		switch {
+		case isPgCode(err, "23503"):
+			return "", ErrUserRoleNotFound
+		default:
+			return "", err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+
+	return userID, nil
 }
 
 func (r *Repository) Update(ctx context.Context, userID string, input UpdateInput) (*User, error) {

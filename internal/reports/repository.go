@@ -414,14 +414,7 @@ func buildPatrolScanWhere(filters PatrolScanFilters) (string, []any) {
 		args = append(args, filters.PatrolRunID)
 		where = append(where, fmt.Sprintf("ps.patrol_run_id = $%d", len(args)))
 	}
-	if filters.FromDate != "" {
-		args = append(args, filters.FromDate)
-		where = append(where, fmt.Sprintf("ps.scanned_at >= $%d::date::timestamptz", len(args)))
-	}
-	if filters.ToDate != "" {
-		args = append(args, filters.ToDate)
-		where = append(where, fmt.Sprintf("ps.scanned_at < ($%d::date + interval '1 day')::timestamptz", len(args)))
-	}
+	appendLocalDateRangeFilter(&args, &where, "ps.scanned_at", filters.FromDate, filters.ToDate)
 	return buildWhereSQL(where), args
 }
 
@@ -552,15 +545,20 @@ func buildFacilityScanWhere(filters FacilityScanFilters) (string, []any) {
 		args = append(args, filters.Status)
 		where = append(where, fmt.Sprintf("fs.status = $%d", len(args)))
 	}
-	if filters.FromDate != "" {
-		args = append(args, filters.FromDate)
-		where = append(where, fmt.Sprintf("fs.scanned_at >= $%d::date::timestamptz", len(args)))
-	}
-	if filters.ToDate != "" {
-		args = append(args, filters.ToDate)
-		where = append(where, fmt.Sprintf("fs.scanned_at < ($%d::date + interval '1 day')::timestamptz", len(args)))
-	}
+	appendLocalDateRangeFilter(&args, &where, "fs.scanned_at", filters.FromDate, filters.ToDate)
 	return buildWhereSQL(where), args
+}
+
+func appendLocalDateRangeFilter(args *[]any, where *[]string, column, fromDate, toDate string) {
+	localDateExpr := fmt.Sprintf("(%s at time zone '%s')::date", column, defaultAttendanceTimezone)
+	if fromDate != "" {
+		*args = append(*args, fromDate)
+		*where = append(*where, fmt.Sprintf("%s >= $%d::date", localDateExpr, len(*args)))
+	}
+	if toDate != "" {
+		*args = append(*args, toDate)
+		*where = append(*where, fmt.Sprintf("%s <= $%d::date", localDateExpr, len(*args)))
+	}
 }
 
 func buildWhereSQL(where []string) string {
