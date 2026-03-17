@@ -227,22 +227,19 @@ func renderAttendanceDetailPages(pdf *gofpdf.Fpdf, input attendancePDFInput) {
 }
 
 func renderPatrolDetailPages(pdf *gofpdf.Fpdf, input patrolPDFInput) {
-	groups := groupPatrolRows(input.Rows)
-	for _, group := range groups {
-		pdf.AddPage()
-		renderPatrolGroupFrame(pdf, group.title)
+	pdf.AddPage()
+	renderPatrolGroupFrame(pdf, "Patrol Scan Timeline")
 
-		currentY := 20.0
-		for _, row := range group.rows {
-			blockHeight := measurePatrolScanBlock(pdf, row, 186)
-			if currentY+blockHeight > 272 {
-				pdf.AddPage()
-				renderPatrolGroupFrame(pdf, group.title)
-				currentY = 20
-			}
-			renderPatrolScanBlock(pdf, row, input.StorageRoot, 12, currentY, 186, blockHeight)
-			currentY += blockHeight + 2
+	currentY := 20.0
+	for _, row := range input.Rows {
+		blockHeight := measurePatrolScanBlock(pdf, row, 186)
+		if currentY+blockHeight > 272 {
+			pdf.AddPage()
+			renderPatrolGroupFrame(pdf, "Patrol Scan Timeline")
+			currentY = 20
 		}
+		renderPatrolScanBlock(pdf, row, input.StorageRoot, 12, currentY, 186, blockHeight)
+		currentY += blockHeight + 2
 	}
 }
 
@@ -349,33 +346,6 @@ func renderImageBox(pdf *gofpdf.Fpdf, storageRoot, photoURL string, x, y, w, h f
 	pdf.ClipRect(x+innerPadding, y+innerPadding, frameW, frameH, false)
 	pdf.ImageOptions(imageName, drawX, drawY, drawW, drawH, false, options, 0, "")
 	pdf.ClipEnd()
-}
-
-type patrolGroup struct {
-	title string
-	rows  []PatrolScanReportRow
-}
-
-func groupPatrolRows(rows []PatrolScanReportRow) []patrolGroup {
-	order := make([]string, 0)
-	grouped := make(map[string][]PatrolScanReportRow)
-	titles := make(map[string]string)
-	for _, row := range rows {
-		key := strings.TrimSpace(row.SpotID)
-		if key == "" {
-			key = strings.TrimSpace(row.SpotCode) + "::" + strings.TrimSpace(row.SpotName)
-		}
-		if _, exists := grouped[key]; !exists {
-			order = append(order, key)
-			titles[key] = safeText(row.SpotName, "-") + " - " + safeText(row.SpotCode, "-")
-		}
-		grouped[key] = append(grouped[key], row)
-	}
-	result := make([]patrolGroup, 0, len(order))
-	for _, key := range order {
-		result = append(result, patrolGroup{title: titles[key], rows: grouped[key]})
-	}
-	return result
 }
 
 func renderPatrolGroupFrame(pdf *gofpdf.Fpdf, title string) {

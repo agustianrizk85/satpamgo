@@ -3,7 +3,9 @@ package reports
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"satpam-go/internal/auth"
 	"satpam-go/internal/listquery"
@@ -252,6 +254,7 @@ func (h *Handler) downloadAttendance(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to generate attendance report")
 		return
 	}
+	sortAttendanceReportRows(rows)
 	headers := []string{"Attendance Date", "Place", "User", "Shift", "Status", "Late Minutes", "Check In", "Check Out", "Check In Photo", "Check Out Photo", "Note", "Created At", "Updated At"}
 	body := make([][]string, 0, len(rows))
 	for _, row := range rows {
@@ -308,6 +311,7 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to generate patrol scan report")
 		return
 	}
+	sortPatrolReportRows(rows)
 	headers := []string{"Scanned At", "Place", "User", "Spot Code", "Spot Name", "Patrol Run ID", "Photo URL", "Note"}
 	body := make([][]string, 0, len(rows))
 	for _, row := range rows {
@@ -456,6 +460,46 @@ func resolvePatrolPlaceName(filters PatrolScanFilters, rows []PatrolScanReportRo
 		return filters.PlaceID
 	}
 	return "Semua Place"
+}
+
+func sortAttendanceReportRows(rows []AttendanceReportRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].AttendanceDate != rows[j].AttendanceDate {
+			return rows[i].AttendanceDate > rows[j].AttendanceDate
+		}
+		ti := attendanceRowSortTime(rows[i])
+		tj := attendanceRowSortTime(rows[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return strings.Compare(rows[i].FullName, rows[j].FullName) < 0
+	})
+}
+
+func attendanceRowSortTime(row AttendanceReportRow) time.Time {
+	for _, value := range []string{deref(row.CheckOutAt), deref(row.CheckInAt), row.UpdatedAt, row.CreatedAt} {
+		if ts, ok := parseReportTime(value); ok {
+			return ts
+		}
+	}
+	if ts, err := time.Parse("2006-01-02", strings.TrimSpace(row.AttendanceDate)); err == nil {
+		return ts
+	}
+	return time.Time{}
+}
+
+func sortPatrolReportRows(rows []PatrolScanReportRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		ti, okI := parseReportTime(rows[i].ScannedAt)
+		tj, okJ := parseReportTime(rows[j].ScannedAt)
+		if okI && okJ && !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if okI != okJ {
+			return okI
+		}
+		return strings.Compare(rows[i].PatrolRunID, rows[j].PatrolRunID) < 0
+	})
 }
 
 func isDateOnly(v string) bool {
