@@ -22,7 +22,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	query, message, ok := listquery.Parse(r, listquery.Options{
 		AllowedSortBy: []string{"attendanceDate", "createdAt", "updatedAt", "checkInAt", "checkOutAt", "submitAt", "status", "userId", "placeId"},
-		DefaultSortBy: "attendanceDate",
+		DefaultSortBy: "checkInAt",
 	})
 	if !ok {
 		web.WriteError(w, http.StatusBadRequest, message)

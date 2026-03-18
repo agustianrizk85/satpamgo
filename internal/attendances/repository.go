@@ -38,6 +38,7 @@ type Attendance struct {
 	CheckInPhotoURL  *string    `json:"check_in_photo_url"`
 	CheckOutPhotoURL *string    `json:"check_out_photo_url"`
 	Status           string     `json:"status"`
+	LateMinutes      *int       `json:"late_minutes"`
 	Note             *string    `json:"note"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
@@ -83,35 +84,47 @@ func NewRepository(db *pgxpool.Pool) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Response[Attendance], error) {
 	sortColumn := map[string]string{
-		"attendanceDate": "attendance_date",
-		"createdAt":      "created_at",
-		"updatedAt":      "updated_at",
-		"checkInAt":      "check_in_at",
-		"checkOutAt":     "check_out_at",
-		"submitAt":       "submit_at",
-		"status":         "status",
-		"userId":         "user_id",
-		"placeId":        "place_id",
+		"attendanceDate": "a.attendance_date",
+		"createdAt":      "a.created_at",
+		"updatedAt":      "a.updated_at",
+		"checkInAt":      "a.check_in_at",
+		"checkOutAt":     "a.check_out_at",
+		"submitAt":       "a.submit_at",
+		"status":         "a.status",
+		"userId":         "a.user_id",
+		"placeId":        "a.place_id",
 	}[params.Query.SortBy]
 	if sortColumn == "" {
-		sortColumn = "attendance_date"
+		sortColumn = "a.attendance_date"
 	}
 	sortDirection := "desc"
 	if params.Query.SortOrder == listquery.SortAsc {
 		sortDirection = "asc"
 	}
 	sql := `
-		select id, place_id, user_id, assignment_id, shift_id, attendance_date::text, check_in_at, check_out_at, submit_at, photo_url, check_in_photo_url, check_out_photo_url, status, note, created_at, updated_at, count(*) over()::int as total_count
-		from attendances
+		select
+			a.id, a.place_id, a.user_id, a.assignment_id, a.shift_id, a.attendance_date::text,
+			a.check_in_at, a.check_out_at, a.submit_at, a.photo_url, a.check_in_photo_url, a.check_out_photo_url,
+			a.status,
+			case
+				when a.check_in_at is null or s.start_time is null then null
+				else greatest(
+					floor(extract(epoch from ((a.check_in_at at time zone 'Asia/Jakarta') - (a.attendance_date::timestamp + s.start_time))) / 60),
+					0
+				)::int
+			end as late_minutes,
+			a.note, a.created_at, a.updated_at, count(*) over()::int as total_count
+		from attendances a
+		left join shifts s on s.id = a.shift_id
 		where true
 	`
 	args := []any{}
 	if params.PlaceID != "" {
 		args = append(args, params.PlaceID)
-		sql += fmt.Sprintf(" and place_id = $%d", len(args))
+		sql += fmt.Sprintf(" and a.place_id = $%d", len(args))
 	} else if !auth.IsGlobalAdminRole(params.ActorRole) {
 		args = append(args, params.ActorUserID)
-		sql += fmt.Sprintf(` and place_id in (
+		sql += fmt.Sprintf(` and a.place_id in (
 			select distinct upr.place_id
 			from user_place_roles upr
 			join places p on p.id = upr.place_id
@@ -120,14 +133,14 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 	}
 	if params.UserID != "" {
 		args = append(args, params.UserID)
-		sql += fmt.Sprintf(" and user_id = $%d", len(args))
+		sql += fmt.Sprintf(" and a.user_id = $%d", len(args))
 	}
 	if params.AttendanceDate != "" {
 		args = append(args, params.AttendanceDate)
-		sql += fmt.Sprintf(" and attendance_date = $%d::date", len(args))
+		sql += fmt.Sprintf(" and a.attendance_date = $%d::date", len(args))
 	}
 	args = append(args, params.Query.PageSize, params.Query.Offset)
-	sql += fmt.Sprintf(" order by %s %s, id asc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
+	sql += fmt.Sprintf(" order by %s %s nulls last, a.created_at desc, a.id desc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
 	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return listquery.Response[Attendance]{}, err
@@ -137,7 +150,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 	total := 0
 	for rows.Next() {
 		var item Attendance
-		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.AssignmentID, &item.ShiftID, &item.AttendanceDate, &item.CheckInAt, &item.CheckOutAt, &item.SubmitAt, &item.PhotoURL, &item.CheckInPhotoURL, &item.CheckOutPhotoURL, &item.Status, &item.Note, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.AssignmentID, &item.ShiftID, &item.AttendanceDate, &item.CheckInAt, &item.CheckOutAt, &item.SubmitAt, &item.PhotoURL, &item.CheckInPhotoURL, &item.CheckOutPhotoURL, &item.Status, &item.LateMinutes, &item.Note, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
 			return listquery.Response[Attendance]{}, err
 		}
 		data = append(data, item)
@@ -146,6 +159,13 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 }
 
 func (r *Repository) Create(ctx context.Context, input CreateInput) (string, error) {
+	if err := r.hydrateAssignmentAndShift(ctx, &input); err != nil {
+		return "", err
+	}
+	if err := r.deriveLateStatusOnCreate(ctx, &input); err != nil {
+		return "", err
+	}
+
 	const sql = `
 		insert into attendances (place_id, user_id, assignment_id, shift_id, attendance_date, check_in_at, check_out_at, submit_at, photo_url, check_in_photo_url, check_out_photo_url, status, note)
 		values ($1,$2,$3,$4,$5::date,$6::timestamptz,$7::timestamptz,coalesce($8::timestamptz, now()),$9,$10,$11,$12,$13)
@@ -166,7 +186,79 @@ func (r *Repository) Create(ctx context.Context, input CreateInput) (string, err
 	return id, nil
 }
 
+func (r *Repository) deriveLateStatusOnCreate(ctx context.Context, input *CreateInput) error {
+	if input.CheckInAt == nil || input.ShiftID == nil {
+		return nil
+	}
+	if input.Status != "PRESENT" && input.Status != "LATE" {
+		return nil
+	}
+
+	late, err := r.computeLateMinutes(ctx, input.AttendanceDate, *input.ShiftID, *input.CheckInAt)
+	if err != nil {
+		return err
+	}
+	if late > 0 {
+		input.Status = "LATE"
+		return nil
+	}
+	input.Status = "PRESENT"
+	return nil
+}
+
+func (r *Repository) hydrateAssignmentAndShift(ctx context.Context, input *CreateInput) error {
+	if input.AssignmentID != nil && input.ShiftID != nil {
+		return nil
+	}
+
+	if input.AssignmentID != nil && input.ShiftID == nil {
+		const sql = `select shift_id from spot_assignments where id = $1 limit 1`
+		var shiftID string
+		err := r.db.QueryRow(ctx, sql, *input.AssignmentID).Scan(&shiftID)
+		switch {
+		case err == nil:
+			input.ShiftID = &shiftID
+			return nil
+		case errors.Is(err, pgx.ErrNoRows):
+			return ErrForeignKey
+		default:
+			return err
+		}
+	}
+
+	const sql = `
+		select id, shift_id
+		from spot_assignments
+		where place_id = $1
+		  and user_id = $2
+		  and is_active = true
+		order by updated_at desc, created_at desc, id desc
+		limit 1
+	`
+	var assignmentID, shiftID string
+	err := r.db.QueryRow(ctx, sql, input.PlaceID, input.UserID).Scan(&assignmentID, &shiftID)
+	switch {
+	case err == nil:
+		if input.AssignmentID == nil {
+			input.AssignmentID = &assignmentID
+		}
+		if input.ShiftID == nil {
+			input.ShiftID = &shiftID
+		}
+		return nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	default:
+		return err
+	}
+}
+
 func (r *Repository) Update(ctx context.Context, id string, input UpdateInput) (*Attendance, error) {
+	input, err := r.deriveLateStatusOnUpdate(ctx, id, input)
+	if err != nil {
+		return nil, err
+	}
+
 	setParts := make([]string, 0, 6)
 	args := make([]any, 0, 7)
 	addNullableTime := func(column string, value **string) {
@@ -213,7 +305,7 @@ func (r *Repository) Update(ctx context.Context, id string, input UpdateInput) (
 		returning id, place_id, user_id, assignment_id, shift_id, attendance_date::text, check_in_at, check_out_at, submit_at, photo_url, check_in_photo_url, check_out_photo_url, status, note, created_at, updated_at
 	`, strings.Join(setParts, ", "), len(args))
 	var item Attendance
-	err := r.db.QueryRow(ctx, sql, args...).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.AssignmentID, &item.ShiftID, &item.AttendanceDate, &item.CheckInAt, &item.CheckOutAt, &item.SubmitAt, &item.PhotoURL, &item.CheckInPhotoURL, &item.CheckOutPhotoURL, &item.Status, &item.Note, &item.CreatedAt, &item.UpdatedAt)
+	err = r.db.QueryRow(ctx, sql, args...).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.AssignmentID, &item.ShiftID, &item.AttendanceDate, &item.CheckInAt, &item.CheckOutAt, &item.SubmitAt, &item.PhotoURL, &item.CheckInPhotoURL, &item.CheckOutPhotoURL, &item.Status, &item.Note, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -225,6 +317,79 @@ func (r *Repository) Update(ctx context.Context, id string, input UpdateInput) (
 		}
 	}
 	return &item, nil
+}
+
+func (r *Repository) deriveLateStatusOnUpdate(ctx context.Context, id string, input UpdateInput) (UpdateInput, error) {
+	if input.CheckInAt == nil && input.Status == nil {
+		return input, nil
+	}
+
+	const sql = `select attendance_date::text, shift_id, status from attendances where id = $1 limit 1`
+	var attendanceDate string
+	var shiftID *string
+	var currentStatus string
+	err := r.db.QueryRow(ctx, sql, id).Scan(&attendanceDate, &shiftID, &currentStatus)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return input, ErrNotFound
+		}
+		return input, err
+	}
+
+	if shiftID == nil {
+		return input, nil
+	}
+
+	if input.CheckInAt == nil {
+		return input, nil
+	}
+	if *input.CheckInAt == nil {
+		return input, nil
+	}
+
+	effectiveStatus := currentStatus
+	if input.Status != nil {
+		effectiveStatus = *input.Status
+	}
+	if effectiveStatus != "PRESENT" && effectiveStatus != "LATE" {
+		return input, nil
+	}
+
+	late, err := r.computeLateMinutes(ctx, attendanceDate, *shiftID, **input.CheckInAt)
+	if err != nil {
+		return input, err
+	}
+	status := "PRESENT"
+	if late > 0 {
+		status = "LATE"
+	}
+	input.Status = &status
+	return input, nil
+}
+
+func (r *Repository) computeLateMinutes(ctx context.Context, attendanceDate, shiftID, checkInAt string) (int, error) {
+	const sql = `
+		select case
+			when s.start_time is null then 0
+			else greatest(
+				floor(extract(epoch from (($3::timestamptz at time zone 'Asia/Jakarta') - ($1::date::timestamp + s.start_time))) / 60),
+				0
+			)::int
+		end
+		from shifts s
+		where s.id = $2
+		limit 1
+	`
+	var late int
+	err := r.db.QueryRow(ctx, sql, attendanceDate, shiftID, checkInAt).Scan(&late)
+	switch {
+	case err == nil:
+		return late, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, ErrForeignKey
+	default:
+		return 0, err
+	}
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) (string, error) {

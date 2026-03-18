@@ -29,6 +29,7 @@ import (
 	"satpam-go/internal/spots"
 	"satpam-go/internal/userplaceroles"
 	"satpam-go/internal/users"
+	"satpam-go/internal/visitors"
 )
 
 func main() {
@@ -55,6 +56,7 @@ func main() {
 	spotAssignmentRepo := spotassignments.NewRepository(dbPool)
 	attendanceConfigRepo := attendanceconfig.NewRepository(dbPool)
 	attendanceRepo := attendances.NewRepository(dbPool)
+	visitorRepo := visitors.NewRepository(dbPool)
 	leaveRequestRepo := leaverequests.NewRepository(dbPool)
 	patrolRepo := patrol.NewRepository(dbPool)
 	facilityRepo := facility.NewRepository(dbPool)
@@ -71,6 +73,7 @@ func main() {
 	spotAssignmentHandler := spotassignments.NewHandler(spotAssignmentRepo, authRepo)
 	attendanceConfigHandler := attendanceconfig.NewHandler(attendanceConfigRepo, authRepo)
 	attendanceHandler := attendances.NewHandler(attendanceRepo)
+	visitorHandler := visitors.NewHandler(visitorRepo, authRepo)
 	leaveRequestHandler := leaverequests.NewHandler(leaveRequestRepo)
 	patrolHandler := patrol.NewHandler(patrolRepo, authRepo)
 	facilityHandler := facility.NewHandler(facilityRepo, authRepo)
@@ -87,7 +90,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, tokenService, mediaService.Root()),
+		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, tokenService, mediaService.Root()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,

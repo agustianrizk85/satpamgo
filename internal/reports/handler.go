@@ -13,8 +13,8 @@ import (
 )
 
 type Handler struct {
-	repo     *Repository
-	authRepo *auth.Repository
+	repo        *Repository
+	authRepo    *auth.Repository
 	storageRoot string
 }
 
@@ -51,6 +51,69 @@ func (h *Handler) ListAttendance(w http.ResponseWriter, r *http.Request) {
 		"sort":       resp.Sort,
 		"summary":    summary,
 	})
+}
+
+func (h *Handler) ListVisitors(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	query, message, ok := listquery.Parse(r, listquery.Options{
+		AllowedSortBy: []string{"createdAt", "updatedAt", "userName", "placeName", "nik", "nama"},
+		DefaultSortBy: "createdAt",
+	})
+	if !ok {
+		web.WriteError(w, http.StatusBadRequest, message)
+		return
+	}
+	filters, ok := h.parseVisitorFilters(w, r, current)
+	if !ok {
+		return
+	}
+	resp, summary, err := h.repo.ListVisitors(r.Context(), filters, query)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load visitor report")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{
+		"data":       resp.Data,
+		"pagination": resp.Pagination,
+		"sort":       resp.Sort,
+		"summary":    summary,
+	})
+}
+
+func (h *Handler) DownloadVisitors(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	filters, ok := h.parseVisitorFilters(w, r, current)
+	if !ok {
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "csv"
+	}
+	rows, summary, err := h.repo.DownloadVisitors(r.Context(), filters, "createdAt", listquery.SortDesc)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to generate visitor report")
+		return
+	}
+	headers := []string{"Created At", "Place", "User", "NIK", "Nama", "Tujuan", "Catatan", "Updated At"}
+	body := make([][]string, 0, len(rows))
+	for _, row := range rows {
+		body = append(body, []string{row.CreatedAt, row.PlaceName, row.FullName, row.NIK, row.Nama, deref(row.Tujuan), deref(row.Catatan), row.UpdatedAt})
+	}
+	summaryLines := []string{
+		"Total Data: " + stringifyInt(summary.TotalData),
+		"Unique Places: " + stringifyInt(summary.UniquePlaces),
+		"Unique Users: " + stringifyInt(summary.UniqueUsers),
+	}
+	h.writeDownload(w, format, "visitor-log-report", "Visitor Log Report", headers, body, summaryLines)
 }
 
 func (h *Handler) DownloadAttendance(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +257,21 @@ func (h *Handler) parseFacilityFilters(w http.ResponseWriter, r *http.Request, c
 	if filters.Status != "" && !isFacilityStatus(filters.Status) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid status")
 		return FacilityScanFilters{}, false
+	}
+	return filters, true
+}
+
+func (h *Handler) parseVisitorFilters(w http.ResponseWriter, r *http.Request, current auth.AuthContext) (VisitorFilters, bool) {
+	filters := VisitorFilters{
+		ActorUserID: current.UserID,
+		ActorRole:   current.Role,
+		PlaceID:     strings.TrimSpace(r.URL.Query().Get("placeId")),
+		UserID:      strings.TrimSpace(r.URL.Query().Get("userId")),
+		FromDate:    strings.TrimSpace(r.URL.Query().Get("fromDate")),
+		ToDate:      strings.TrimSpace(r.URL.Query().Get("toDate")),
+	}
+	if !h.validateCommonFilters(r.Context(), w, current, filters.PlaceID, filters.UserID, filters.FromDate, filters.ToDate) {
+		return VisitorFilters{}, false
 	}
 	return filters, true
 }

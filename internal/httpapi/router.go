@@ -19,10 +19,11 @@ import (
 	"satpam-go/internal/spots"
 	"satpam-go/internal/userplaceroles"
 	"satpam-go/internal/users"
+	"satpam-go/internal/visitors"
 	"satpam-go/internal/web"
 )
 
-func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, tokenService *auth.TokenService, storageRoot string) http.Handler {
+func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, tokenService *auth.TokenService, storageRoot string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -73,6 +74,11 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("POST /api/v1/attendances", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.Create)))
 	mux.Handle("PATCH /api/v1/attendances/{attendanceId}", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.Patch)))
 	mux.Handle("DELETE /api/v1/attendances/{attendanceId}", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.Delete)))
+	mux.Handle("GET /api/v1/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(visitorHandler.List)))
+	mux.Handle("POST /api/v1/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(visitorHandler.Create)))
+	mux.Handle("GET /api/v1/visitors/{visitorId}", auth.RequireAuth(tokenService, http.HandlerFunc(visitorHandler.Get)))
+	mux.Handle("PATCH /api/v1/visitors/{visitorId}", auth.RequireAuth(tokenService, http.HandlerFunc(visitorHandler.Patch)))
+	mux.Handle("DELETE /api/v1/visitors/{visitorId}", auth.RequireAuth(tokenService, http.HandlerFunc(visitorHandler.Delete)))
 	mux.Handle("GET /api/v1/leave-requests", auth.RequireAuth(tokenService, http.HandlerFunc(leaveRequestHandler.List)))
 	mux.Handle("POST /api/v1/leave-requests", auth.RequireAuth(tokenService, http.HandlerFunc(leaveRequestHandler.Create)))
 	mux.Handle("PATCH /api/v1/leave-requests", auth.RequireAuth(tokenService, http.HandlerFunc(leaveRequestHandler.Patch)))
@@ -96,6 +102,8 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/recent-activities", auth.RequireAuth(tokenService, http.HandlerFunc(recentActivitiesHandler.List)))
 	mux.Handle("GET /api/v1/reports/attendance", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListAttendance)))
 	mux.Handle("GET /api/v1/reports/attendance/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadAttendance)))
+	mux.Handle("GET /api/v1/reports/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListVisitors)))
+	mux.Handle("GET /api/v1/reports/visitors/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadVisitors)))
 	mux.Handle("GET /api/v1/reports/patrol-scans", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListPatrolScans)))
 	mux.Handle("GET /api/v1/reports/patrol-scans/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadPatrolScans)))
 	mux.Handle("GET /api/v1/reports/facility-scans", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListFacilityScans)))

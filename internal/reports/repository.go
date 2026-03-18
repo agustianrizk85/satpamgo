@@ -68,6 +68,26 @@ type AttendanceReportSummary struct {
 	LeaveCount   int `json:"leave_count"`
 }
 
+type VisitorReportRow struct {
+	ID        string  `json:"id"`
+	PlaceID   string  `json:"place_id"`
+	PlaceName string  `json:"place_name"`
+	UserID    string  `json:"user_id"`
+	FullName  string  `json:"full_name"`
+	NIK       string  `json:"nik"`
+	Nama      string  `json:"nama"`
+	Tujuan    *string `json:"tujuan"`
+	Catatan   *string `json:"catatan"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
+}
+
+type VisitorReportSummary struct {
+	TotalData    int `json:"total_data"`
+	UniquePlaces int `json:"unique_places"`
+	UniqueUsers  int `json:"unique_users"`
+}
+
 type PatrolScanReportRow struct {
 	ID          string  `json:"id"`
 	PlaceID     string  `json:"place_id"`
@@ -151,6 +171,15 @@ type FacilityScanFilters struct {
 	ToDate      string
 }
 
+type VisitorFilters struct {
+	ActorUserID string
+	ActorRole   string
+	PlaceID     string
+	UserID      string
+	FromDate    string
+	ToDate      string
+}
+
 func (r *Repository) ListAttendance(ctx context.Context, filters AttendanceFilters, query listquery.Query) (listquery.Response[AttendanceReportRow], AttendanceReportSummary, error) {
 	rows, total, err := r.queryAttendance(ctx, filters, query, true)
 	if err != nil {
@@ -161,6 +190,31 @@ func (r *Repository) ListAttendance(ctx context.Context, filters AttendanceFilte
 		return listquery.Response[AttendanceReportRow]{}, AttendanceReportSummary{}, err
 	}
 	return listquery.BuildResponse(rows, query, total), summary, nil
+}
+
+func (r *Repository) ListVisitors(ctx context.Context, filters VisitorFilters, query listquery.Query) (listquery.Response[VisitorReportRow], VisitorReportSummary, error) {
+	rows, total, err := r.queryVisitors(ctx, filters, query, true)
+	if err != nil {
+		return listquery.Response[VisitorReportRow]{}, VisitorReportSummary{}, err
+	}
+	summary, err := r.visitorSummary(ctx, filters)
+	if err != nil {
+		return listquery.Response[VisitorReportRow]{}, VisitorReportSummary{}, err
+	}
+	return listquery.BuildResponse(rows, query, total), summary, nil
+}
+
+func (r *Repository) DownloadVisitors(ctx context.Context, filters VisitorFilters, sortBy string, sortOrder listquery.SortOrder) ([]VisitorReportRow, VisitorReportSummary, error) {
+	query := listquery.Query{Page: 1, PageSize: 100000, SortBy: sortBy, SortOrder: sortOrder}
+	rows, _, err := r.queryVisitors(ctx, filters, query, false)
+	if err != nil {
+		return nil, VisitorReportSummary{}, err
+	}
+	summary, err := r.visitorSummary(ctx, filters)
+	if err != nil {
+		return nil, VisitorReportSummary{}, err
+	}
+	return rows, summary, nil
 }
 
 func (r *Repository) DownloadAttendance(ctx context.Context, filters AttendanceFilters, sortBy string, sortOrder listquery.SortOrder) ([]AttendanceReportRow, AttendanceReportSummary, error) {
@@ -277,6 +331,93 @@ func (r *Repository) attendanceSummary(ctx context.Context, filters AttendanceFi
 		&out.TotalData, &out.PresentCount, &out.LateCount, &out.AbsentCount, &out.OffCount, &out.SickCount, &out.LeaveCount,
 	)
 	return out, err
+}
+
+func (r *Repository) queryVisitors(ctx context.Context, filters VisitorFilters, query listquery.Query, paged bool) ([]VisitorReportRow, int, error) {
+	sortColumn := map[string]string{
+		"createdAt": "v.created_at",
+		"updatedAt": "v.updated_at",
+		"userName":  "u.full_name",
+		"placeName": "p.place_name",
+		"nik":       "v.nik",
+		"nama":      "v.nama",
+	}[query.SortBy]
+	if sortColumn == "" {
+		sortColumn = "v.created_at"
+	}
+	sortDirection := "desc"
+	if query.SortOrder == listquery.SortAsc {
+		sortDirection = "asc"
+	}
+
+	whereSQL, args := buildVisitorWhere(filters)
+	limitOffset := ""
+	if paged {
+		args = append(args, defaultAttendanceTimezone, query.PageSize, query.Offset)
+		limitOffset = fmt.Sprintf(" limit $%d offset $%d", len(args)-1, len(args))
+	} else {
+		args = append(args, defaultAttendanceTimezone)
+	}
+	tzArg := fmt.Sprintf("$%d", len(args)-2)
+	if !paged {
+		tzArg = fmt.Sprintf("$%d", len(args))
+	}
+
+	sql := fmt.Sprintf(`
+		select
+			v.id, v.place_id, p.place_name, v.user_id, u.full_name, v.nik, v.nama, v.tujuan, v.catatan,
+			to_char(v.created_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			to_char(v.updated_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS'),
+			count(*) over()::int as total_count
+		from visitors v
+		join users u on u.id = v.user_id
+		join places p on p.id = v.place_id
+		%s
+		order by %s %s, v.id desc
+		%s
+	`, tzArg, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
+
+	rowsDB, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rowsDB.Close()
+	data := make([]VisitorReportRow, 0)
+	total := 0
+	for rowsDB.Next() {
+		var item VisitorReportRow
+		if err := rowsDB.Scan(&item.ID, &item.PlaceID, &item.PlaceName, &item.UserID, &item.FullName, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
+			return nil, 0, err
+		}
+		data = append(data, item)
+	}
+	return data, total, rowsDB.Err()
+}
+
+func (r *Repository) visitorSummary(ctx context.Context, filters VisitorFilters) (VisitorReportSummary, error) {
+	whereSQL, args := buildVisitorWhere(filters)
+	sql := `
+		select
+			count(*)::int as total_data,
+			count(distinct v.place_id)::int as unique_places,
+			count(distinct v.user_id)::int as unique_users
+		from visitors v
+	` + whereSQL
+	var out VisitorReportSummary
+	err := r.db.QueryRow(ctx, sql, args...).Scan(&out.TotalData, &out.UniquePlaces, &out.UniqueUsers)
+	return out, err
+}
+
+func buildVisitorWhere(filters VisitorFilters) (string, []any) {
+	args := make([]any, 0, 8)
+	where := make([]string, 0, 8)
+	applyPlaceScope(&args, &where, filters.ActorRole, filters.ActorUserID, filters.PlaceID, "v.place_id")
+	if filters.UserID != "" {
+		args = append(args, filters.UserID)
+		where = append(where, fmt.Sprintf("v.user_id = $%d", len(args)))
+	}
+	appendLocalDateRangeFilter(&args, &where, "v.created_at", filters.FromDate, filters.ToDate)
+	return buildWhereSQL(where), args
 }
 
 func buildAttendanceWhere(filters AttendanceFilters) (string, []any) {
