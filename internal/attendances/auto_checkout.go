@@ -22,8 +22,8 @@ func (r *Repository) AutoCheckoutDue(ctx context.Context, now time.Time, graceMi
 				a.user_id,
 				case
 					when s.end_time <= s.start_time
-						then (a.attendance_date + s.end_time + interval '1 day' + make_interval(mins => $1))::timestamptz
-					else (a.attendance_date + s.end_time + make_interval(mins => $1))::timestamptz
+						then ((a.attendance_date::timestamp + s.end_time + interval '1 day' + make_interval(mins => $1)) at time zone 'Asia/Jakarta')
+					else ((a.attendance_date::timestamp + s.end_time + make_interval(mins => $1)) at time zone 'Asia/Jakarta')
 				end as auto_checkout_at
 			from attendances a
 			join shifts s on s.id = a.shift_id
