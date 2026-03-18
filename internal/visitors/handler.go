@@ -78,7 +78,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.IsGlobalAdminRole(current.Role) {
-		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, body.PlaceID, []string{auth.PlaceRoleAdmin})
+		ok, err := h.authRepo.HasPlaceAccess(r.Context(), current.UserID, body.PlaceID, nil)
 		if err != nil {
 			web.WriteError(w, http.StatusInternalServerError, "Failed to validate access")
 			return
