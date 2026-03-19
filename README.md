@@ -9,6 +9,7 @@ Versi backend Go untuk project Satpam API, dibuat terpisah dari `satpam-app` sup
 - `GET /api/v1/auth/me`
 - `GET /api/v1/users`
 - `GET /api/v1/recent-activities`
+- `GET /api/v1/patrol/progress?attendanceId=...`
 
 ## Menjalankan
 
@@ -162,6 +163,7 @@ Default asset sistem akan dibuat otomatis di:
 Untuk kolom offline sync `submit_at`, jalankan SQL berikut:
 
 - [20260313_add_submit_at.sql](C:/Users/agust/OneDrive/Desktop/Kerjaa/Azka/SatpamApi/satpam-go/migrations/20260313_add_submit_at.sql)
+- [20260319_add_patrol_attendance_id.sql](C:/Users/agust/OneDrive/Desktop/Kerjaa/Azka/SatpamApi/satpam-go/migrations/20260319_add_patrol_attendance_id.sql)
 
 ### Cara menjalankan migrasi
 
@@ -201,6 +203,15 @@ psql "postgresql://postgres:root@127.0.0.1:5432/postgres" -c "\d facility_check_
 Pastikan masing-masing tabel sudah punya kolom:
 
 - `submit_at timestamptz`
+- `attendance_id uuid` pada `patrol_scans`
+
+## Progress Patrol Per Shift
+
+Sekarang scan patroli bisa dikaitkan ke `attendance` aktif lewat field opsional `attendanceId` pada `POST /api/v1/patrol/scans`.
+
+- Jika `attendanceId` tidak dikirim, backend akan mencoba mengambil attendance aktif user berdasarkan waktu `scannedAt`
+- `patrolRunId` tetap dipakai sebagai ID ronde patroli, jadi dalam 1 shift user bebas membuat banyak ronde
+- `GET /api/v1/patrol/progress?attendanceId=...` akan mengembalikan total spot rute aktif, spot yang sudah dipatroli, spot yang belum dipatroli, jumlah ronde, total scan, dan hitungan scan per spot
 
 Setelah migrasi selesai, jalankan lagi server:
 

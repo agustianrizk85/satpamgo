@@ -18,6 +18,7 @@ import (
 var (
 	ErrRoutePointNotFound = errors.New("route point not found")
 	ErrPatrolScanNotFound = errors.New("patrol scan not found")
+	ErrProgressNotFound   = errors.New("patrol progress not found")
 	ErrAlreadyExists      = errors.New("already exists")
 	ErrForeignKey         = errors.New("related row not found")
 )
@@ -35,15 +36,43 @@ type PatrolRoutePoint struct {
 }
 
 type PatrolScan struct {
-	ID          string    `json:"id"`
-	PlaceID     string    `json:"place_id"`
-	UserID      string    `json:"user_id"`
-	SpotID      string    `json:"spot_id"`
-	PatrolRunID string    `json:"patrol_run_id"`
-	ScannedAt   time.Time `json:"scanned_at"`
-	SubmitAt    time.Time `json:"submit_at"`
-	PhotoURL    *string   `json:"photo_url"`
-	Note        *string   `json:"note"`
+	ID           string    `json:"id"`
+	PlaceID      string    `json:"place_id"`
+	UserID       string    `json:"user_id"`
+	SpotID       string    `json:"spot_id"`
+	AttendanceID *string   `json:"attendance_id"`
+	PatrolRunID  string    `json:"patrol_run_id"`
+	ScannedAt    time.Time `json:"scanned_at"`
+	SubmitAt     time.Time `json:"submit_at"`
+	PhotoURL     *string   `json:"photo_url"`
+	Note         *string   `json:"note"`
+}
+
+type PatrolProgress struct {
+	AttendanceID     string               `json:"attendance_id"`
+	PlaceID          string               `json:"place_id"`
+	UserID           string               `json:"user_id"`
+	ShiftID          *string              `json:"shift_id"`
+	AttendanceDate   string               `json:"attendance_date"`
+	CheckInAt        *time.Time           `json:"check_in_at"`
+	CheckOutAt       *time.Time           `json:"check_out_at"`
+	TotalRouteSpots  int                  `json:"total_route_spots"`
+	PatrolledSpots   int                  `json:"patrolled_spots"`
+	UnpatrolledSpots int                  `json:"unpatrolled_spots"`
+	TotalScans       int                  `json:"total_scans"`
+	TotalPatrolRuns  int                  `json:"total_patrol_runs"`
+	Spots            []PatrolProgressSpot `json:"spots"`
+}
+
+type PatrolProgressSpot struct {
+	SpotID          string     `json:"spot_id"`
+	SpotCode        string     `json:"spot_code"`
+	SpotName        string     `json:"spot_name"`
+	Seq             int        `json:"seq"`
+	ScanCount       int        `json:"scan_count"`
+	IsPatrolled     bool       `json:"is_patrolled"`
+	LastScannedAt   *time.Time `json:"last_scanned_at"`
+	LastPatrolRunID *string    `json:"last_patrol_run_id"`
 }
 
 func NewRepository(db *pgxpool.Pool) *Repository { return &Repository{db: db} }
@@ -116,7 +145,7 @@ func (r *Repository) DeleteRoutePoint(ctx context.Context, id, placeID string) (
 	return out, nil
 }
 
-func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, patrolRunID, userID string, query listquery.Query) (listquery.Response[PatrolScan], error) {
+func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, patrolRunID, userID, attendanceID string, query listquery.Query) (listquery.Response[PatrolScan], error) {
 	sortColumn := map[string]string{"scannedAt": "scanned_at", "submitAt": "submit_at", "placeId": "place_id", "userId": "user_id", "spotId": "spot_id", "patrolRunId": "patrol_run_id"}[query.SortBy]
 	if sortColumn == "" {
 		sortColumn = "scanned_at"
@@ -125,7 +154,7 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	if query.SortOrder == listquery.SortAsc {
 		sortDirection = "asc"
 	}
-	sql := `select id, place_id, user_id, spot_id, patrol_run_id, scanned_at, submit_at, photo_url, note, count(*) over()::int as total_count from patrol_scans where place_id = $1`
+	sql := `select id, place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note, count(*) over()::int as total_count from patrol_scans where place_id = $1`
 	args := []any{placeID}
 	if !auth.IsGlobalAdminRole(actorRole) {
 		args = append(args, actorUserID)
@@ -143,6 +172,10 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 		args = append(args, userID)
 		sql += fmt.Sprintf(" and user_id = $%d", len(args))
 	}
+	if attendanceID != "" {
+		args = append(args, attendanceID)
+		sql += fmt.Sprintf(" and attendance_id = $%d", len(args))
+	}
 	args = append(args, query.PageSize, query.Offset)
 	sql += fmt.Sprintf(" order by %s %s, id asc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
 	rows, err := r.db.Query(ctx, sql, args...)
@@ -154,7 +187,7 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	total := 0
 	for rows.Next() {
 		var item PatrolScan
-		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.SpotID, &item.PatrolRunID, &item.ScannedAt, &item.SubmitAt, &item.PhotoURL, &item.Note, &total); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.SpotID, &item.AttendanceID, &item.PatrolRunID, &item.ScannedAt, &item.SubmitAt, &item.PhotoURL, &item.Note, &total); err != nil {
 			return listquery.Response[PatrolScan]{}, err
 		}
 		data = append(data, item)
@@ -162,10 +195,14 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	return listquery.BuildResponse(data, query, total), rows.Err()
 }
 
-func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, patrolRunID string, scannedAt, submitAt, photoURL, note *string) (string, error) {
-	const sql = `insert into patrol_scans (place_id, user_id, spot_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,coalesce($5::timestamptz, now()),coalesce($6::timestamptz, now()),$7,$8) returning id`
+func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, patrolRunID string, scannedAt, submitAt, photoURL, note *string) (string, error) {
+	resolvedAttendanceID, err := r.resolveAttendanceID(ctx, placeID, userID, attendanceID, scannedAt)
+	if err != nil {
+		return "", err
+	}
+	const sql = `insert into patrol_scans (place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,$5,coalesce($6::timestamptz, now()),coalesce($7::timestamptz, now()),$8,$9) returning id`
 	var id string
-	err := r.db.QueryRow(ctx, sql, placeID, userID, spotID, patrolRunID, scannedAt, submitAt, photoURL, note).Scan(&id)
+	err = r.db.QueryRow(ctx, sql, placeID, userID, spotID, resolvedAttendanceID, patrolRunID, scannedAt, submitAt, photoURL, note).Scan(&id)
 	if err != nil {
 		switch {
 		case isPgCode(err, "23505"):
@@ -177,6 +214,144 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, pa
 		}
 	}
 	return id, nil
+}
+
+func (r *Repository) resolveAttendanceID(ctx context.Context, placeID, userID string, provided, scannedAt *string) (*string, error) {
+	if provided != nil && strings.TrimSpace(*provided) != "" {
+		value := strings.TrimSpace(*provided)
+		return &value, nil
+	}
+
+	const sql = `
+		select a.id
+		from attendances a
+		where a.place_id = $1
+		  and a.user_id = $2
+		  and a.check_in_at is not null
+		  and a.check_in_at <= coalesce($3::timestamptz, now())
+		  and (a.check_out_at is null or a.check_out_at >= coalesce($3::timestamptz, now()))
+		order by a.check_in_at desc, a.created_at desc, a.id desc
+		limit 1
+	`
+	var attendanceID string
+	err := r.db.QueryRow(ctx, sql, placeID, userID, scannedAt).Scan(&attendanceID)
+	switch {
+	case err == nil:
+		return &attendanceID, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, err
+	}
+}
+
+func (r *Repository) GetProgress(ctx context.Context, actorUserID, actorRole, attendanceID string) (*PatrolProgress, error) {
+	const attendanceSQL = `
+		select a.id, a.place_id, a.user_id, a.shift_id, a.attendance_date::text, a.check_in_at, a.check_out_at
+		from attendances a
+		where a.id = $1
+		  and (
+		    $2 = true
+		    or a.place_id in (
+		      select distinct upr.place_id
+		      from user_place_roles upr
+		      join places p on p.id = upr.place_id
+		      where upr.user_id = $3 and upr.is_active = true and p.deleted_at is null
+		    )
+		  )
+		limit 1
+	`
+	progress := &PatrolProgress{}
+	err := r.db.QueryRow(ctx, attendanceSQL, attendanceID, auth.IsGlobalAdminRole(actorRole), actorUserID).Scan(
+		&progress.AttendanceID,
+		&progress.PlaceID,
+		&progress.UserID,
+		&progress.ShiftID,
+		&progress.AttendanceDate,
+		&progress.CheckInAt,
+		&progress.CheckOutAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProgressNotFound
+		}
+		return nil, err
+	}
+
+	const totalsSQL = `
+		with route_spots as (
+			select prp.spot_id
+			from patrol_route_points prp
+			where prp.place_id = $1
+			  and prp.is_active = true
+		),
+		scan_rows as (
+			select ps.spot_id, ps.patrol_run_id
+			from patrol_scans ps
+			where ps.attendance_id = $2
+		)
+		select
+			(select count(*)::int from route_spots) as total_route_spots,
+			(select count(distinct sr.spot_id)::int from scan_rows sr join route_spots rs on rs.spot_id = sr.spot_id) as patrolled_spots,
+			(select count(*)::int from scan_rows) as total_scans,
+			(select count(distinct patrol_run_id)::int from scan_rows) as total_patrol_runs
+	`
+	if err := r.db.QueryRow(ctx, totalsSQL, progress.PlaceID, progress.AttendanceID).Scan(
+		&progress.TotalRouteSpots,
+		&progress.PatrolledSpots,
+		&progress.TotalScans,
+		&progress.TotalPatrolRuns,
+	); err != nil {
+		return nil, err
+	}
+	progress.UnpatrolledSpots = progress.TotalRouteSpots - progress.PatrolledSpots
+	if progress.UnpatrolledSpots < 0 {
+		progress.UnpatrolledSpots = 0
+	}
+
+	const spotsSQL = `
+		select
+			prp.spot_id,
+			s.spot_code,
+			s.spot_name,
+			prp.seq,
+			coalesce(count(ps.id), 0)::int as scan_count,
+			max(ps.scanned_at) as last_scanned_at,
+			(
+				array_remove(
+					array_agg(ps.patrol_run_id order by ps.scanned_at desc, ps.id desc),
+					null
+				)
+			)[1] as last_patrol_run_id
+		from patrol_route_points prp
+		join spots s on s.id = prp.spot_id
+		left join patrol_scans ps
+		  on ps.spot_id = prp.spot_id
+		 and ps.attendance_id = $2
+		where prp.place_id = $1
+		  and prp.is_active = true
+		group by prp.spot_id, s.spot_code, s.spot_name, prp.seq
+		order by prp.seq asc, s.spot_code asc, prp.spot_id asc
+	`
+	rows, err := r.db.Query(ctx, spotsSQL, progress.PlaceID, progress.AttendanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	progress.Spots = make([]PatrolProgressSpot, 0)
+	for rows.Next() {
+		var item PatrolProgressSpot
+		if err := rows.Scan(&item.SpotID, &item.SpotCode, &item.SpotName, &item.Seq, &item.ScanCount, &item.LastScannedAt, &item.LastPatrolRunID); err != nil {
+			return nil, err
+		}
+		item.IsPatrolled = item.ScanCount > 0
+		progress.Spots = append(progress.Spots, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return progress, nil
 }
 
 func isPgCode(err error, code string) bool {

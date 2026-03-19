@@ -140,9 +140,37 @@ func (h *Handler) ListScans(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, message)
 		return
 	}
-	result, err := h.repo.ListScans(r.Context(), current.UserID, current.Role, placeID, strings.TrimSpace(r.URL.Query().Get("patrolRunId")), strings.TrimSpace(r.URL.Query().Get("userId")), query)
+	attendanceID := strings.TrimSpace(r.URL.Query().Get("attendanceId"))
+	if attendanceID != "" && !web.IsUUID(attendanceID) {
+		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
+		return
+	}
+	result, err := h.repo.ListScans(r.Context(), current.UserID, current.Role, placeID, strings.TrimSpace(r.URL.Query().Get("patrolRunId")), strings.TrimSpace(r.URL.Query().Get("userId")), attendanceID, query)
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol scans")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) GetProgress(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	attendanceID := strings.TrimSpace(r.URL.Query().Get("attendanceId"))
+	if !web.IsUUID(attendanceID) {
+		web.WriteError(w, http.StatusBadRequest, "attendanceId is required")
+		return
+	}
+	result, err := h.repo.GetProgress(r.Context(), current.UserID, current.Role, attendanceID)
+	if err != nil {
+		if errors.Is(err, ErrProgressNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Patrol progress not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol progress")
 		return
 	}
 	web.WriteJSON(w, http.StatusOK, result)
@@ -154,14 +182,15 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PlaceID     string  `json:"placeId"`
-		UserID      string  `json:"userId"`
-		SpotID      string  `json:"spotId"`
-		PatrolRunID string  `json:"patrolRunId"`
-		ScannedAt   *string `json:"scannedAt"`
-		SubmitAt    *string `json:"submitAt"`
-		PhotoURL    *string `json:"photoUrl"`
-		Note        *string `json:"note"`
+		PlaceID      string  `json:"placeId"`
+		UserID       string  `json:"userId"`
+		SpotID       string  `json:"spotId"`
+		AttendanceID *string `json:"attendanceId"`
+		PatrolRunID  string  `json:"patrolRunId"`
+		ScannedAt    *string `json:"scannedAt"`
+		SubmitAt     *string `json:"submitAt"`
+		PhotoURL     *string `json:"photoUrl"`
+		Note         *string `json:"note"`
 	}
 	if err := web.DecodeJSON(r, &body); err != nil {
 		web.WriteError(w, http.StatusBadRequest, "Invalid body")
@@ -171,7 +200,12 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "placeId, userId, spotId, and patrolRunId are required")
 		return
 	}
-	id, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), strings.TrimSpace(body.PatrolRunID), trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
+	attendanceID := trimStringPtr(body.AttendanceID)
+	if attendanceID != nil && !web.IsUUID(*attendanceID) {
+		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
+		return
+	}
+	id, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), attendanceID, strings.TrimSpace(body.PatrolRunID), trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyExists):

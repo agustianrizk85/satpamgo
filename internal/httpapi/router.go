@@ -85,6 +85,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListRoutePoints)))
 	mux.Handle("POST /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateRoutePoint)))
 	mux.Handle("DELETE /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteRoutePoint)))
+	mux.Handle("GET /api/v1/patrol/progress", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.GetProgress)))
 	mux.Handle("GET /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListScans)))
 	mux.Handle("POST /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateScan)))
 	mux.Handle("GET /api/v1/facility/spots", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.ListSpots)))
