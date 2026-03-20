@@ -200,17 +200,20 @@ psql "postgresql://postgres:root@127.0.0.1:5432/postgres" -c "\d patrol_scans"
 psql "postgresql://postgres:root@127.0.0.1:5432/postgres" -c "\d facility_check_scans"
 ```
 
-Pastikan masing-masing tabel sudah punya kolom:
+Pastikan masing-masing tabel sudah punya kolom / tabel:
 
 - `submit_at timestamptz`
 - `attendance_id uuid` pada `patrol_scans`
+- tabel `patrol_runs`
 
 ## Progress Patrol Per Shift
 
 Sekarang scan patroli bisa dikaitkan ke `attendance` aktif lewat field opsional `attendanceId` pada `POST /api/v1/patrol/scans`.
 
 - Jika `attendanceId` tidak dikirim, backend akan mencoba mengambil attendance aktif user berdasarkan waktu `scannedAt`
-- `patrolRunId` tetap dipakai sebagai ID ronde patroli, jadi dalam 1 shift user bebas membuat banyak ronde
+- Backend akan membentuk `patrol_runs` otomatis. Selama ronde aktif belum mencakup semua spot route aktif, scan baru tetap masuk ke ronde yang sama
+- Jika semua spot route aktif pada ronde itu sudah terscan, scan berikutnya otomatis membuat ronde baru
+- Response `POST /api/v1/patrol/scans` sekarang mengembalikan `patrolRunId`, `patrolRunNo`, `isNewPatrolRun`, dan `patrolRunCompleted`
 - `GET /api/v1/patrol/progress?attendanceId=...` akan mengembalikan total spot rute aktif, spot yang sudah dipatroli, spot yang belum dipatroli, jumlah ronde, total scan, dan hitungan scan per spot
 
 Setelah migrasi selesai, jalankan lagi server:

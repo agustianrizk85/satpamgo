@@ -186,7 +186,6 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		UserID       string  `json:"userId"`
 		SpotID       string  `json:"spotId"`
 		AttendanceID *string `json:"attendanceId"`
-		PatrolRunID  string  `json:"patrolRunId"`
 		ScannedAt    *string `json:"scannedAt"`
 		SubmitAt     *string `json:"submitAt"`
 		PhotoURL     *string `json:"photoUrl"`
@@ -196,8 +195,8 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid body")
 		return
 	}
-	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || strings.TrimSpace(body.PatrolRunID) == "" {
-		web.WriteError(w, http.StatusBadRequest, "placeId, userId, spotId, and patrolRunId are required")
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) {
+		web.WriteError(w, http.StatusBadRequest, "placeId, userId, and spotId are required")
 		return
 	}
 	attendanceID := trimStringPtr(body.AttendanceID)
@@ -205,7 +204,7 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
 	}
-	id, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), attendanceID, strings.TrimSpace(body.PatrolRunID), trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
+	result, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), attendanceID, trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyExists):
@@ -217,7 +216,13 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	web.WriteJSON(w, http.StatusCreated, map[string]string{"id": id})
+	web.WriteJSON(w, http.StatusCreated, map[string]any{
+		"id":                 result.ID,
+		"patrolRunId":        result.PatrolRunID,
+		"patrolRunNo":        result.PatrolRunNo,
+		"isNewPatrolRun":     result.IsNewPatrolRun,
+		"patrolRunCompleted": result.PatrolRunCompleted,
+	})
 }
 
 func trimStringPtr(value *string) *string {

@@ -2,8 +2,10 @@ package patrol
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -46,6 +48,14 @@ type PatrolScan struct {
 	SubmitAt     time.Time `json:"submit_at"`
 	PhotoURL     *string   `json:"photo_url"`
 	Note         *string   `json:"note"`
+}
+
+type CreateScanResult struct {
+	ID                 string
+	PatrolRunID        string
+	PatrolRunNo        int
+	IsNewPatrolRun     bool
+	PatrolRunCompleted bool
 }
 
 type PatrolProgress struct {
@@ -195,25 +205,189 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	return listquery.BuildResponse(data, query, total), rows.Err()
 }
 
-func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, patrolRunID string, scannedAt, submitAt, photoURL, note *string) (string, error) {
+func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, scannedAt, submitAt, photoURL, note *string) (*CreateScanResult, error) {
 	resolvedAttendanceID, err := r.resolveAttendanceID(ctx, placeID, userID, attendanceID, scannedAt)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	totalActiveSpots, err := r.countActiveRouteSpots(ctx, tx, placeID)
+	if err != nil {
+		return nil, err
+	}
+
+	runID, runNo, isNewRun, err := r.ensureActiveRun(ctx, tx, placeID, userID, resolvedAttendanceID, totalActiveSpots, scannedAt)
+	if err != nil {
+		return nil, err
+	}
+
 	const sql = `insert into patrol_scans (place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,$5,coalesce($6::timestamptz, now()),coalesce($7::timestamptz, now()),$8,$9) returning id`
 	var id string
-	err = r.db.QueryRow(ctx, sql, placeID, userID, spotID, resolvedAttendanceID, patrolRunID, scannedAt, submitAt, photoURL, note).Scan(&id)
+	err = tx.QueryRow(ctx, sql, placeID, userID, spotID, resolvedAttendanceID, runID, scannedAt, submitAt, photoURL, note).Scan(&id)
 	if err != nil {
 		switch {
 		case isPgCode(err, "23505"):
-			return "", ErrAlreadyExists
+			return nil, ErrAlreadyExists
 		case isPgCode(err, "23503"):
-			return "", ErrForeignKey
+			return nil, ErrForeignKey
 		default:
-			return "", err
+			return nil, err
 		}
 	}
-	return id, nil
+
+	runCompleted, err := r.syncRunCompletion(ctx, tx, runID, totalActiveSpots, submitAt, scannedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return &CreateScanResult{
+		ID:                 id,
+		PatrolRunID:        runID,
+		PatrolRunNo:        runNo,
+		IsNewPatrolRun:     isNewRun,
+		PatrolRunCompleted: runCompleted,
+	}, nil
+}
+
+func (r *Repository) countActiveRouteSpots(ctx context.Context, tx pgx.Tx, placeID string) (int, error) {
+	const sql = `
+		select count(*)::int
+		from patrol_route_points
+		where place_id = $1
+		  and is_active = true
+	`
+	var total int
+	err := tx.QueryRow(ctx, sql, placeID).Scan(&total)
+	return total, err
+}
+
+func (r *Repository) ensureActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string, attendanceID *string, totalActiveSpots int, startedAt *string) (string, int, bool, error) {
+	activeRunID, activeRunNo, activeRunTotal, found, err := r.findActiveRun(ctx, tx, placeID, userID, attendanceID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	if found {
+		isComplete, err := r.isRunComplete(ctx, tx, activeRunID, activeRunTotal)
+		if err != nil {
+			return "", 0, false, err
+		}
+		if !isComplete {
+			return activeRunID, activeRunNo, false, nil
+		}
+		if err := r.markRunCompleted(ctx, tx, activeRunID, startedAt); err != nil {
+			return "", 0, false, err
+		}
+	}
+
+	runNo, err := r.nextRunNo(ctx, tx, placeID, userID, attendanceID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	runID := newPatrolRunID()
+	const sql = `
+		insert into patrol_runs (id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at)
+		values ($1,$2,$3,$4,$5,$6,'active',coalesce($7::timestamptz, now()))
+	`
+	if _, err := tx.Exec(ctx, sql, runID, placeID, userID, attendanceID, runNo, totalActiveSpots, startedAt); err != nil {
+		return "", 0, false, err
+	}
+	return runID, runNo, true, nil
+}
+
+func (r *Repository) findActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string, attendanceID *string) (string, int, int, bool, error) {
+	const sql = `
+		select id, run_no, total_active_spots
+		from patrol_runs
+		where place_id = $1
+		  and user_id = $2
+		  and attendance_id is not distinct from $3::uuid
+		  and status = 'active'
+		order by run_no desc, created_at desc, id desc
+		limit 1
+		for update
+	`
+	var runID string
+	var runNo, totalActiveSpots int
+	err := tx.QueryRow(ctx, sql, placeID, userID, attendanceID).Scan(&runID, &runNo, &totalActiveSpots)
+	switch {
+	case err == nil:
+		return runID, runNo, totalActiveSpots, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", 0, 0, false, nil
+	default:
+		return "", 0, 0, false, err
+	}
+}
+
+func (r *Repository) nextRunNo(ctx context.Context, tx pgx.Tx, placeID, userID string, attendanceID *string) (int, error) {
+	const sql = `
+		select coalesce(max(run_no), 0)::int + 1
+		from patrol_runs
+		where place_id = $1
+		  and user_id = $2
+		  and attendance_id is not distinct from $3::uuid
+	`
+	var runNo int
+	err := tx.QueryRow(ctx, sql, placeID, userID, attendanceID).Scan(&runNo)
+	return runNo, err
+}
+
+func (r *Repository) isRunComplete(ctx context.Context, tx pgx.Tx, runID string, totalActiveSpots int) (bool, error) {
+	if totalActiveSpots <= 0 {
+		return false, nil
+	}
+	const sql = `
+		select count(distinct ps.spot_id)::int
+		from patrol_scans ps
+		where ps.patrol_run_id = $1
+		  and exists (
+		    select 1
+		    from patrol_route_points prp
+		    where prp.place_id = ps.place_id
+		      and prp.spot_id = ps.spot_id
+		  )
+	`
+	var scannedSpots int
+	if err := tx.QueryRow(ctx, sql, runID).Scan(&scannedSpots); err != nil {
+		return false, err
+	}
+	return scannedSpots >= totalActiveSpots, nil
+}
+
+func (r *Repository) syncRunCompletion(ctx context.Context, tx pgx.Tx, runID string, totalActiveSpots int, submitAt, scannedAt *string) (bool, error) {
+	isComplete, err := r.isRunComplete(ctx, tx, runID, totalActiveSpots)
+	if err != nil {
+		return false, err
+	}
+	if !isComplete {
+		return false, nil
+	}
+	if err := r.markRunCompleted(ctx, tx, runID, firstNonNil(submitAt, scannedAt)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *Repository) markRunCompleted(ctx context.Context, tx pgx.Tx, runID string, completedAt *string) error {
+	const sql = `
+		update patrol_runs
+		set status = 'completed',
+		    completed_at = coalesce(completed_at, coalesce($2::timestamptz, now())),
+		    updated_at = now()
+		where id = $1
+	`
+	_, err := tx.Exec(ctx, sql, runID, completedAt)
+	return err
 }
 
 func (r *Repository) resolveAttendanceID(ctx context.Context, placeID, userID string, provided, scannedAt *string) (*string, error) {
@@ -357,4 +531,29 @@ func (r *Repository) GetProgress(ctx context.Context, actorUserID, actorRole, at
 func isPgCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && strings.TrimSpace(pgErr.Code) == code
+}
+
+func firstNonNil(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return value
+		}
+	}
+	return nil
+}
+
+func newPatrolRunID() string {
+	var raw [16]byte
+	if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
+		panic(err)
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		raw[0:4],
+		raw[4:6],
+		raw[6:8],
+		raw[8:10],
+		raw[10:16],
+	)
 }
