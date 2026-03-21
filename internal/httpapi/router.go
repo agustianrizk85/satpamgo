@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 
+	"satpam-go/internal/apierrorlogs"
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
@@ -23,7 +24,7 @@ import (
 	"satpam-go/internal/web"
 )
 
-func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, tokenService *auth.TokenService, storageRoot string) http.Handler {
+func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -101,6 +102,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/facility/scans", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.ListScans)))
 	mux.Handle("POST /api/v1/facility/scans", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.CreateScan)))
 	mux.Handle("GET /api/v1/recent-activities", auth.RequireAuth(tokenService, http.HandlerFunc(recentActivitiesHandler.List)))
+	mux.Handle("GET /api/v1/api-error-logs", auth.RequireAuth(tokenService, http.HandlerFunc(apiErrorLogHandler.List)))
 	mux.Handle("GET /api/v1/reports/attendance", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListAttendance)))
 	mux.Handle("GET /api/v1/reports/attendance/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadAttendance)))
 	mux.Handle("GET /api/v1/reports/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListVisitors)))
@@ -113,13 +115,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("POST /api/v1/uploads/patrol", auth.RequireAuth(tokenService, http.HandlerFunc(mediaHandler.UploadPatrol)))
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(storageRoot))))
 
-	return recoverMiddleware(corsMiddleware(loggingMiddleware(mux)))
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-	})
+	return loggingMiddleware(tokenService, apiErrorLogRepo, recoverMiddleware(corsMiddleware(mux)))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

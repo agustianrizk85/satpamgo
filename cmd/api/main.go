@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"satpam-go/internal/apierrorlogs"
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
@@ -62,6 +63,7 @@ func main() {
 	facilityRepo := facility.NewRepository(dbPool)
 	recentActivitiesRepo := recentactivities.NewRepository(dbPool)
 	reportRepo := reports.NewRepository(dbPool)
+	apiErrorLogRepo := apierrorlogs.NewRepository(dbPool)
 
 	authHandler := auth.NewHandler(authRepo, tokenService)
 	userHandler := users.NewHandler(userRepo, authRepo)
@@ -80,6 +82,7 @@ func main() {
 	mediaHandler := media.NewHandler(mediaService, cfg.UploadMaxBytes)
 	recentActivitiesHandler := recentactivities.NewHandler(recentActivitiesRepo, authRepo)
 	reportHandler := reports.NewHandler(reportRepo, authRepo, cfg.StorageRoot)
+	apiErrorLogHandler := apierrorlogs.NewHandler(apiErrorLogRepo, authRepo)
 
 	if err := mediaService.CleanupAttendanceExpired(time.Now()); err != nil {
 		log.Printf("cleanup attendance photos: %v", err)
@@ -90,7 +93,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, tokenService, mediaService.Root()),
+		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
