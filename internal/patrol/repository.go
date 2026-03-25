@@ -269,6 +269,9 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 		); err != nil {
 			return listquery.Response[PatrolRun]{}, err
 		}
+		if err := r.applyCurrentRunProgress(ctx, &item); err != nil {
+			return listquery.Response[PatrolRun]{}, err
+		}
 		data = append(data, item)
 	}
 	return listquery.BuildResponse(data, query, total), rows.Err()
@@ -327,7 +330,62 @@ func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID s
 		}
 		return nil, err
 	}
+	if err := r.applyCurrentRunProgress(ctx, &item); err != nil {
+		return nil, err
+	}
 	return &item, nil
+}
+
+func (r *Repository) applyCurrentRunProgress(ctx context.Context, run *PatrolRun) error {
+	const sql = `
+		with active_route_spots as (
+			select spot_id
+			from patrol_route_points
+			where place_id = $1
+			  and is_active = true
+		)
+		select
+			(select count(*)::int from active_route_spots) as total_active_spots,
+			(
+				select coalesce(count(distinct ps.spot_id), 0)::int
+				from patrol_scans ps
+				join active_route_spots ars on ars.spot_id = ps.spot_id
+				where ps.patrol_run_id = $2
+			) as unique_scanned_spots,
+			(
+				select max(coalesce(ps.submit_at, ps.scanned_at))
+				from patrol_scans ps
+				join active_route_spots ars on ars.spot_id = ps.spot_id
+				where ps.patrol_run_id = $2
+			) as last_active_scan_at
+	`
+
+	var currentTotalActiveSpots int
+	var currentUniqueScannedSpots int
+	var lastActiveScanAt *time.Time
+	if err := r.db.QueryRow(ctx, sql, run.PlaceID, run.ID).Scan(&currentTotalActiveSpots, &currentUniqueScannedSpots, &lastActiveScanAt); err != nil {
+		return err
+	}
+
+	// Prefer current active route-point totals when the place still has active spots.
+	if currentTotalActiveSpots > 0 {
+		run.TotalActiveSpots = currentTotalActiveSpots
+		run.UniqueScannedSpots = currentUniqueScannedSpots
+
+		if strings.EqualFold(run.Status, "active") && currentUniqueScannedSpots >= currentTotalActiveSpots {
+			run.Status = "completed"
+			if run.CompletedAt == nil {
+				if lastActiveScanAt != nil {
+					run.CompletedAt = lastActiveScanAt
+				} else {
+					completedAt := run.UpdatedAt
+					run.CompletedAt = &completedAt
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (r *Repository) CreateRun(ctx context.Context, placeID, userID string, attendanceID *string, runNo, totalActiveSpots *int, status *string) (*PatrolRun, error) {

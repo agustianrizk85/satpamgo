@@ -1,0 +1,10 @@
+.env
+.env.local
+*.log
+*.exe
+*.exe~
+*.rar
+
+# Local temp/debug outputs
+tmp-*.out.log
+tmp-*.err.log
