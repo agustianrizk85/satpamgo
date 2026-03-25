@@ -110,6 +110,12 @@ type PatrolScanReportSummary struct {
 	UniqueUsers      int `json:"unique_users"`
 }
 
+type PatrolScanDateSummary struct {
+	Dates   []string `json:"dates"`
+	MinDate string   `json:"min_date"`
+	MaxDate string   `json:"max_date"`
+}
+
 type FacilityScanReportRow struct {
 	ID        string  `json:"id"`
 	PlaceID   string  `json:"place_id"`
@@ -157,6 +163,13 @@ type PatrolScanFilters struct {
 	PatrolRunID string
 	FromDate    string
 	ToDate      string
+}
+
+type PatrolScanDateFilters struct {
+	ActorUserID string
+	ActorRole   string
+	PlaceID     string
+	Month       string
 }
 
 type FacilityScanFilters struct {
@@ -466,6 +479,62 @@ func (r *Repository) DownloadPatrolScans(ctx context.Context, filters PatrolScan
 		return nil, PatrolScanReportSummary{}, err
 	}
 	return rows, summary, nil
+}
+
+func (r *Repository) PatrolScanDates(ctx context.Context, filters PatrolScanDateFilters) (PatrolScanDateSummary, error) {
+	args := make([]any, 0, 4)
+	where := make([]string, 0, 4)
+	applyPlaceScope(&args, &where, filters.ActorRole, filters.ActorUserID, filters.PlaceID, "ps.place_id")
+
+	if filters.Month != "" {
+		args = append(args, filters.Month)
+		where = append(where, fmt.Sprintf("to_char(ps.scanned_at at time zone '%s', 'YYYY-MM') = $%d", defaultAttendanceTimezone, len(args)))
+	}
+
+	whereSQL := buildWhereSQL(where)
+
+	dateSQL := `
+		select distinct to_char((ps.scanned_at at time zone 'Asia/Jakarta')::date, 'YYYY-MM-DD') as scan_date
+		from patrol_scans ps
+	` + whereSQL + `
+		order by scan_date asc
+	`
+
+	rows, err := r.db.Query(ctx, dateSQL, args...)
+	if err != nil {
+		return PatrolScanDateSummary{}, err
+	}
+	defer rows.Close()
+
+	out := PatrolScanDateSummary{
+		Dates: make([]string, 0),
+	}
+	for rows.Next() {
+		var scanDate string
+		if err := rows.Scan(&scanDate); err != nil {
+			return PatrolScanDateSummary{}, err
+		}
+		out.Dates = append(out.Dates, scanDate)
+	}
+	if err := rows.Err(); err != nil {
+		return PatrolScanDateSummary{}, err
+	}
+
+	rangeArgs := make([]any, 0, 2)
+	rangeWhere := make([]string, 0, 2)
+	applyPlaceScope(&rangeArgs, &rangeWhere, filters.ActorRole, filters.ActorUserID, filters.PlaceID, "ps.place_id")
+	rangeSQL := `
+		select
+			coalesce(to_char(min((ps.scanned_at at time zone 'Asia/Jakarta')::date), 'YYYY-MM-DD'), '') as min_date,
+			coalesce(to_char(max((ps.scanned_at at time zone 'Asia/Jakarta')::date), 'YYYY-MM-DD'), '') as max_date
+		from patrol_scans ps
+	` + buildWhereSQL(rangeWhere)
+
+	if err := r.db.QueryRow(ctx, rangeSQL, rangeArgs...).Scan(&out.MinDate, &out.MaxDate); err != nil {
+		return PatrolScanDateSummary{}, err
+	}
+
+	return out, nil
 }
 
 func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFilters, query listquery.Query, paged bool) ([]PatrolScanReportRow, int, error) {

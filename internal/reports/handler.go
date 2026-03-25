@@ -151,6 +151,52 @@ func (h *Handler) ListPatrolScans(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) PatrolScanDates(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+
+	placeID := strings.TrimSpace(r.URL.Query().Get("placeId"))
+	month := strings.TrimSpace(r.URL.Query().Get("month"))
+	if placeID != "" && !web.IsUUID(placeID) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid placeId")
+		return
+	}
+	if month != "" {
+		if len(month) != 7 || month[4] != '-' {
+			web.WriteError(w, http.StatusBadRequest, "month must use YYYY-MM")
+			return
+		}
+		for i, r := range month {
+			if i == 4 {
+				continue
+			}
+			if r < '0' || r > '9' {
+				web.WriteError(w, http.StatusBadRequest, "month must use YYYY-MM")
+				return
+			}
+		}
+	}
+	if placeID != "" && !h.validateCommonFilters(r.Context(), w, current, placeID, "", "", "") {
+		return
+	}
+
+	summary, err := h.repo.PatrolScanDates(r.Context(), PatrolScanDateFilters{
+		ActorUserID: current.UserID,
+		ActorRole:   current.Role,
+		PlaceID:     placeID,
+		Month:       month,
+	})
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol scan report dates")
+		return
+	}
+
+	web.WriteJSON(w, http.StatusOK, summary)
+}
+
 func (h *Handler) DownloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 	h.downloadPatrolScans(w, r)
 }

@@ -129,6 +129,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/reports/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListVisitors)))
 	mux.Handle("GET /api/v1/reports/visitors/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadVisitors)))
 	mux.Handle("GET /api/v1/reports/patrol-scans", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListPatrolScans)))
+	mux.Handle("GET /api/v1/reports/patrol-scans/dates", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.PatrolScanDates)))
 	mux.Handle("GET /api/v1/reports/patrol-scans/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadPatrolScans)))
 	mux.Handle("GET /api/v1/reports/facility-scans", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListFacilityScans)))
 	mux.Handle("GET /api/v1/reports/facility-scans/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadFacilityScans)))

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +13,13 @@ import (
 	"time"
 
 	"github.com/phpdave11/gofpdf"
+	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
+)
+
+const (
+	reportJPEGQuality   = 58
+	reportImageMaxWidth = 960
 )
 
 func renderCSV(headers []string, rows [][]string) ([]byte, error) {
@@ -496,19 +501,35 @@ func prepareReportImage(storageRoot, photoURL string) (string, string, *bytes.Re
 		return "", "", nil, err
 	}
 
+	optimized := resizeForReport(img, reportImageMaxWidth)
 	var encoded bytes.Buffer
-	switch strings.ToLower(format) {
-	case "jpeg", "jpg":
-		if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 85}); err != nil {
-			return "", "", nil, err
-		}
-		return path + "-jpg", "JPG", bytes.NewReader(encoded.Bytes()), nil
-	default:
-		if err := png.Encode(&encoded, img); err != nil {
-			return "", "", nil, err
-		}
-		return path + "-png", "PNG", bytes.NewReader(encoded.Bytes()), nil
+	if err := jpeg.Encode(&encoded, optimized, &jpeg.Options{Quality: reportJPEGQuality}); err != nil {
+		return "", "", nil, err
 	}
+	_ = format
+	return path + "-jpg", "JPG", bytes.NewReader(encoded.Bytes()), nil
+}
+
+func resizeForReport(src image.Image, maxWidth int) image.Image {
+	if src == nil || maxWidth <= 0 {
+		return src
+	}
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 || width <= maxWidth {
+		return src
+	}
+
+	targetWidth := maxWidth
+	targetHeight := int(float64(height) * (float64(targetWidth) / float64(width)))
+	if targetHeight <= 0 {
+		targetHeight = 1
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+	return dst
 }
 
 func resolveReportImagePath(storageRoot, photoURL string) string {
