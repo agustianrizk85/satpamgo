@@ -19,6 +19,7 @@ import (
 
 var (
 	ErrRoutePointNotFound = errors.New("route point not found")
+	ErrPatrolRunNotFound  = errors.New("patrol run not found")
 	ErrPatrolScanNotFound = errors.New("patrol scan not found")
 	ErrProgressNotFound   = errors.New("patrol progress not found")
 	ErrAlreadyExists      = errors.New("already exists")
@@ -48,6 +49,22 @@ type PatrolScan struct {
 	SubmitAt     time.Time `json:"submit_at"`
 	PhotoURL     *string   `json:"photo_url"`
 	Note         *string   `json:"note"`
+}
+
+type PatrolRun struct {
+	ID                 string     `json:"id"`
+	PlaceID            string     `json:"place_id"`
+	UserID             string     `json:"user_id"`
+	AttendanceID       *string    `json:"attendance_id"`
+	RunNo              int        `json:"run_no"`
+	TotalActiveSpots   int        `json:"total_active_spots"`
+	Status             string     `json:"status"`
+	StartedAt          time.Time  `json:"started_at"`
+	CompletedAt        *time.Time `json:"completed_at"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	ScanCount          int        `json:"scan_count"`
+	UniqueScannedSpots int        `json:"unique_scanned_spots"`
 }
 
 type CreateScanResult struct {
@@ -155,6 +172,301 @@ func (r *Repository) DeleteRoutePoint(ctx context.Context, id, placeID string) (
 	return out, nil
 }
 
+func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, placeID, userID, attendanceID, status string, query listquery.Query) (listquery.Response[PatrolRun], error) {
+	sortColumn := map[string]string{
+		"runNo":            "pr.run_no",
+		"status":           "pr.status",
+		"startedAt":        "pr.started_at",
+		"completedAt":      "pr.completed_at",
+		"createdAt":        "pr.created_at",
+		"updatedAt":        "pr.updated_at",
+		"userId":           "pr.user_id",
+		"attendanceId":     "pr.attendance_id",
+		"totalActiveSpots": "pr.total_active_spots",
+	}[query.SortBy]
+	if sortColumn == "" {
+		sortColumn = "pr.started_at"
+	}
+	sortDirection := "desc"
+	if query.SortOrder == listquery.SortAsc {
+		sortDirection = "asc"
+	}
+
+	sql := `
+		select
+			pr.id,
+			pr.place_id,
+			pr.user_id,
+			pr.attendance_id,
+			pr.run_no,
+			pr.total_active_spots,
+			pr.status,
+			pr.started_at,
+			pr.completed_at,
+			pr.created_at,
+			pr.updated_at,
+			count(ps.id)::int as scan_count,
+			count(distinct ps.spot_id)::int as unique_scanned_spots,
+			count(*) over()::int as total_count
+		from patrol_runs pr
+		left join patrol_scans ps on ps.patrol_run_id = pr.id
+		where pr.place_id = $1
+	`
+	args := []any{placeID}
+	if !auth.IsGlobalAdminRole(actorRole) {
+		args = append(args, actorUserID)
+		sql += fmt.Sprintf(` and pr.place_id in (
+			select distinct upr.place_id
+			from user_place_roles upr join places p on p.id = upr.place_id
+			where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null
+		)`, len(args))
+	}
+	if userID != "" {
+		args = append(args, userID)
+		sql += fmt.Sprintf(" and pr.user_id = $%d", len(args))
+	}
+	if attendanceID != "" {
+		args = append(args, attendanceID)
+		sql += fmt.Sprintf(" and pr.attendance_id = $%d", len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		sql += fmt.Sprintf(" and lower(pr.status) = lower($%d)", len(args))
+	}
+
+	args = append(args, query.PageSize, query.Offset)
+	sql += fmt.Sprintf(`
+		group by pr.id
+		order by %s %s, pr.id asc
+		limit $%d offset $%d
+	`, sortColumn, sortDirection, len(args)-1, len(args))
+
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return listquery.Response[PatrolRun]{}, err
+	}
+	defer rows.Close()
+
+	data := make([]PatrolRun, 0)
+	total := 0
+	for rows.Next() {
+		var item PatrolRun
+		if err := rows.Scan(
+			&item.ID,
+			&item.PlaceID,
+			&item.UserID,
+			&item.AttendanceID,
+			&item.RunNo,
+			&item.TotalActiveSpots,
+			&item.Status,
+			&item.StartedAt,
+			&item.CompletedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.ScanCount,
+			&item.UniqueScannedSpots,
+			&total,
+		); err != nil {
+			return listquery.Response[PatrolRun]{}, err
+		}
+		data = append(data, item)
+	}
+	return listquery.BuildResponse(data, query, total), rows.Err()
+}
+
+func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID string) (*PatrolRun, error) {
+	sql := `
+		select
+			pr.id,
+			pr.place_id,
+			pr.user_id,
+			pr.attendance_id,
+			pr.run_no,
+			pr.total_active_spots,
+			pr.status,
+			pr.started_at,
+			pr.completed_at,
+			pr.created_at,
+			pr.updated_at,
+			count(ps.id)::int as scan_count,
+			count(distinct ps.spot_id)::int as unique_scanned_spots
+		from patrol_runs pr
+		left join patrol_scans ps on ps.patrol_run_id = pr.id
+		where pr.id = $1
+	`
+	args := []any{runID}
+	if !auth.IsGlobalAdminRole(actorRole) {
+		args = append(args, actorUserID)
+		sql += fmt.Sprintf(` and pr.place_id in (
+			select distinct upr.place_id
+			from user_place_roles upr join places p on p.id = upr.place_id
+			where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null
+		)`, len(args))
+	}
+	sql += ` group by pr.id`
+
+	var item PatrolRun
+	err := r.db.QueryRow(ctx, sql, args...).Scan(
+		&item.ID,
+		&item.PlaceID,
+		&item.UserID,
+		&item.AttendanceID,
+		&item.RunNo,
+		&item.TotalActiveSpots,
+		&item.Status,
+		&item.StartedAt,
+		&item.CompletedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+		&item.ScanCount,
+		&item.UniqueScannedSpots,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPatrolRunNotFound
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *Repository) CreateRun(ctx context.Context, placeID, userID string, attendanceID *string, runNo, totalActiveSpots *int, status *string) (*PatrolRun, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	resolvedRunNo := 0
+	if runNo != nil && *runNo > 0 {
+		resolvedRunNo = *runNo
+	} else {
+		resolvedRunNo, err = r.nextRunNo(ctx, tx, placeID, userID, attendanceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resolvedTotalActiveSpots := 0
+	if totalActiveSpots != nil && *totalActiveSpots >= 0 {
+		resolvedTotalActiveSpots = *totalActiveSpots
+	} else {
+		resolvedTotalActiveSpots, err = r.countActiveRouteSpots(ctx, tx, placeID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	resolvedStatus := "active"
+	if status != nil && strings.TrimSpace(*status) != "" {
+		resolvedStatus = strings.ToLower(strings.TrimSpace(*status))
+	}
+	if resolvedStatus != "active" && resolvedStatus != "completed" {
+		return nil, fmt.Errorf("invalid patrol run status")
+	}
+
+	runID := newPatrolRunID()
+	const sql = `
+		insert into patrol_runs (id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at, completed_at)
+		values ($1,$2,$3,$4,$5,$6,$7,now(),case when $7 = 'completed' then now() else null end)
+	`
+	if _, err := tx.Exec(ctx, sql, runID, placeID, userID, attendanceID, resolvedRunNo, resolvedTotalActiveSpots, resolvedStatus); err != nil {
+		switch {
+		case isPgCode(err, "23505"):
+			return nil, ErrAlreadyExists
+		case isPgCode(err, "23503"):
+			return nil, ErrForeignKey
+		default:
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetRun(ctx, "", auth.GlobalRoleSuperUser, runID)
+}
+
+func (r *Repository) UpdateRun(ctx context.Context, id string, runNo, totalActiveSpots *int, status *string) (*PatrolRun, error) {
+	setParts := make([]string, 0)
+	args := make([]any, 0)
+	argPos := 1
+
+	if runNo != nil {
+		setParts = append(setParts, fmt.Sprintf("run_no = $%d", argPos))
+		args = append(args, *runNo)
+		argPos++
+	}
+	if totalActiveSpots != nil {
+		setParts = append(setParts, fmt.Sprintf("total_active_spots = $%d", argPos))
+		args = append(args, *totalActiveSpots)
+		argPos++
+	}
+	if status != nil {
+		value := strings.ToLower(strings.TrimSpace(*status))
+		setParts = append(setParts, fmt.Sprintf("status = $%d", argPos))
+		args = append(args, value)
+		argPos++
+		if value == "completed" {
+			setParts = append(setParts, "completed_at = coalesce(completed_at, now())")
+		}
+		if value == "active" {
+			setParts = append(setParts, "completed_at = null")
+		}
+	}
+	if len(setParts) == 0 {
+		return nil, ErrPatrolRunNotFound
+	}
+
+	args = append(args, id)
+	sql := fmt.Sprintf(`
+		update patrol_runs
+		set %s,
+		    updated_at = now()
+		where id = $%d
+		returning id
+	`, strings.Join(setParts, ", "), argPos)
+	var out string
+	if err := r.db.QueryRow(ctx, sql, args...).Scan(&out); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, ErrPatrolRunNotFound
+		case isPgCode(err, "23505"):
+			return nil, ErrAlreadyExists
+		case isPgCode(err, "23503"):
+			return nil, ErrForeignKey
+		default:
+			return nil, err
+		}
+	}
+	return r.GetRun(ctx, "", auth.GlobalRoleSuperUser, out)
+}
+
+func (r *Repository) DeleteRun(ctx context.Context, id string) (string, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `delete from patrol_scans where patrol_run_id = $1`, id); err != nil {
+		return "", err
+	}
+
+	var out string
+	if err := tx.QueryRow(ctx, `delete from patrol_runs where id = $1 returning id`, id).Scan(&out); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrPatrolRunNotFound
+		}
+		return "", err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, patrolRunID, userID, attendanceID string, query listquery.Query) (listquery.Response[PatrolScan], error) {
 	sortColumn := map[string]string{"scannedAt": "scanned_at", "submitAt": "submit_at", "placeId": "place_id", "userId": "user_id", "spotId": "spot_id", "patrolRunId": "patrol_run_id"}[query.SortBy]
 	if sortColumn == "" {
@@ -203,6 +515,196 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 		data = append(data, item)
 	}
 	return listquery.BuildResponse(data, query, total), rows.Err()
+}
+
+func (r *Repository) GetScan(ctx context.Context, actorUserID, actorRole, scanID string) (*PatrolScan, error) {
+	sql := `select id, place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note from patrol_scans where id = $1`
+	args := []any{scanID}
+	if !auth.IsGlobalAdminRole(actorRole) {
+		args = append(args, actorUserID)
+		sql += fmt.Sprintf(` and place_id in (
+			select distinct upr.place_id
+			from user_place_roles upr join places p on p.id = upr.place_id
+			where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null
+		)`, len(args))
+	}
+	var item PatrolScan
+	err := r.db.QueryRow(ctx, sql, args...).Scan(
+		&item.ID,
+		&item.PlaceID,
+		&item.UserID,
+		&item.SpotID,
+		&item.AttendanceID,
+		&item.PatrolRunID,
+		&item.ScannedAt,
+		&item.SubmitAt,
+		&item.PhotoURL,
+		&item.Note,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPatrolScanNotFound
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *Repository) UpdateScan(ctx context.Context, scanID string, patrolRunID, spotID, scannedAt, submitAt, photoURL, note *string) (*PatrolScan, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var existing PatrolScan
+	if err := tx.QueryRow(ctx, `
+		select id, place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note
+		from patrol_scans
+		where id = $1
+		for update
+	`, scanID).Scan(
+		&existing.ID,
+		&existing.PlaceID,
+		&existing.UserID,
+		&existing.SpotID,
+		&existing.AttendanceID,
+		&existing.PatrolRunID,
+		&existing.ScannedAt,
+		&existing.SubmitAt,
+		&existing.PhotoURL,
+		&existing.Note,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPatrolScanNotFound
+		}
+		return nil, err
+	}
+
+	targetRunID := existing.PatrolRunID
+	if patrolRunID != nil && strings.TrimSpace(*patrolRunID) != "" {
+		targetRunID = strings.TrimSpace(*patrolRunID)
+		var runPlaceID, runUserID string
+		if err := tx.QueryRow(ctx, `select place_id, user_id from patrol_runs where id = $1`, targetRunID).Scan(&runPlaceID, &runUserID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrPatrolRunNotFound
+			}
+			return nil, err
+		}
+		if runPlaceID != existing.PlaceID || runUserID != existing.UserID {
+			return nil, ErrForeignKey
+		}
+	}
+
+	setParts := make([]string, 0)
+	args := make([]any, 0)
+	argPos := 1
+
+	if patrolRunID != nil && strings.TrimSpace(*patrolRunID) != "" {
+		setParts = append(setParts, fmt.Sprintf("patrol_run_id = $%d", argPos))
+		args = append(args, targetRunID)
+		argPos++
+	}
+	if spotID != nil && strings.TrimSpace(*spotID) != "" {
+		setParts = append(setParts, fmt.Sprintf("spot_id = $%d", argPos))
+		args = append(args, strings.TrimSpace(*spotID))
+		argPos++
+	}
+	if scannedAt != nil && strings.TrimSpace(*scannedAt) != "" {
+		setParts = append(setParts, fmt.Sprintf("scanned_at = $%d::timestamptz", argPos))
+		args = append(args, strings.TrimSpace(*scannedAt))
+		argPos++
+	}
+	if submitAt != nil && strings.TrimSpace(*submitAt) != "" {
+		setParts = append(setParts, fmt.Sprintf("submit_at = $%d::timestamptz", argPos))
+		args = append(args, strings.TrimSpace(*submitAt))
+		argPos++
+	}
+	if photoURL != nil {
+		setParts = append(setParts, fmt.Sprintf("photo_url = nullif($%d, '')", argPos))
+		args = append(args, strings.TrimSpace(*photoURL))
+		argPos++
+	}
+	if note != nil {
+		setParts = append(setParts, fmt.Sprintf("note = nullif($%d, '')", argPos))
+		args = append(args, strings.TrimSpace(*note))
+		argPos++
+	}
+	if len(setParts) == 0 {
+		return &existing, nil
+	}
+
+	args = append(args, scanID)
+	sql := fmt.Sprintf(`
+		update patrol_scans
+		set %s
+		where id = $%d
+		returning id, place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note
+	`, strings.Join(setParts, ", "), argPos)
+
+	var updated PatrolScan
+	if err := tx.QueryRow(ctx, sql, args...).Scan(
+		&updated.ID,
+		&updated.PlaceID,
+		&updated.UserID,
+		&updated.SpotID,
+		&updated.AttendanceID,
+		&updated.PatrolRunID,
+		&updated.ScannedAt,
+		&updated.SubmitAt,
+		&updated.PhotoURL,
+		&updated.Note,
+	); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, ErrPatrolScanNotFound
+		case isPgCode(err, "23505"):
+			return nil, ErrAlreadyExists
+		case isPgCode(err, "23503"):
+			return nil, ErrForeignKey
+		default:
+			return nil, err
+		}
+	}
+
+	if err := r.syncRunState(ctx, tx, existing.PatrolRunID); err != nil {
+		return nil, err
+	}
+	if updated.PatrolRunID != existing.PatrolRunID {
+		if err := r.syncRunState(ctx, tx, updated.PatrolRunID); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (r *Repository) DeleteScan(ctx context.Context, scanID string) (string, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var runID string
+	if err := tx.QueryRow(ctx, `delete from patrol_scans where id = $1 returning id, patrol_run_id`, scanID).Scan(&scanID, &runID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrPatrolScanNotFound
+		}
+		return "", err
+	}
+
+	if err := r.syncRunState(ctx, tx, runID); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return scanID, nil
 }
 
 func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, scannedAt, submitAt, photoURL, note *string) (*CreateScanResult, error) {
@@ -257,6 +759,32 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID str
 		IsNewPatrolRun:     isNewRun,
 		PatrolRunCompleted: runCompleted,
 	}, nil
+}
+
+func (r *Repository) syncRunState(ctx context.Context, tx pgx.Tx, runID string) error {
+	var totalActiveSpots int
+	if err := tx.QueryRow(ctx, `select total_active_spots from patrol_runs where id = $1`, runID).Scan(&totalActiveSpots); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+
+	isComplete, err := r.isRunComplete(ctx, tx, runID, totalActiveSpots)
+	if err != nil {
+		return err
+	}
+	if isComplete {
+		return r.markRunCompleted(ctx, tx, runID, nil)
+	}
+	_, err = tx.Exec(ctx, `
+		update patrol_runs
+		set status = 'active',
+		    completed_at = null,
+		    updated_at = now()
+		where id = $1
+	`, runID)
+	return err
 }
 
 func (r *Repository) countActiveRouteSpots(ctx context.Context, tx pgx.Tx, placeID string) (int, error) {
@@ -349,13 +877,13 @@ func (r *Repository) isRunComplete(ctx context.Context, tx pgx.Tx, runID string,
 	const sql = `
 		select count(distinct ps.spot_id)::int
 		from patrol_scans ps
+		join patrol_runs pr
+		  on pr.id = ps.patrol_run_id
+		join patrol_route_points prp
+		  on prp.place_id = pr.place_id
+		 and prp.spot_id = ps.spot_id
+		 and prp.is_active = true
 		where ps.patrol_run_id = $1
-		  and exists (
-		    select 1
-		    from patrol_route_points prp
-		    where prp.place_id = ps.place_id
-		      and prp.spot_id = ps.spot_id
-		  )
 	`
 	var scannedSpots int
 	if err := tx.QueryRow(ctx, sql, runID).Scan(&scannedSpots); err != nil {

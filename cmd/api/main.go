@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"satpam-go/internal/apierrorlogs"
+	"satpam-go/internal/appversions"
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
@@ -64,6 +65,8 @@ func main() {
 	recentActivitiesRepo := recentactivities.NewRepository(dbPool)
 	reportRepo := reports.NewRepository(dbPool)
 	apiErrorLogRepo := apierrorlogs.NewRepository(dbPool)
+	appVersionRepo := appversions.NewRepository(dbPool)
+	appVersionStorage := appversions.NewStorage(cfg.StorageRoot)
 
 	authHandler := auth.NewHandler(authRepo, tokenService)
 	userHandler := users.NewHandler(userRepo, authRepo)
@@ -83,6 +86,7 @@ func main() {
 	recentActivitiesHandler := recentactivities.NewHandler(recentActivitiesRepo, authRepo)
 	reportHandler := reports.NewHandler(reportRepo, authRepo, cfg.StorageRoot)
 	apiErrorLogHandler := apierrorlogs.NewHandler(apiErrorLogRepo, authRepo)
+	appVersionHandler := appversions.NewHandler(appVersionRepo, authRepo, appVersionStorage, cfg.AppVersionUploadMaxBytes)
 
 	if err := mediaService.CleanupAttendanceExpired(time.Now()); err != nil {
 		log.Printf("cleanup attendance photos: %v", err)
@@ -93,7 +97,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
+		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, appVersionHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,

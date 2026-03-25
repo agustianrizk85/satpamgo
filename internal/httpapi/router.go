@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"satpam-go/internal/apierrorlogs"
+	"satpam-go/internal/appversions"
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
@@ -24,7 +25,7 @@ import (
 	"satpam-go/internal/web"
 )
 
-func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
+func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, appVersionHandler *appversions.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -86,9 +87,16 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListRoutePoints)))
 	mux.Handle("POST /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateRoutePoint)))
 	mux.Handle("DELETE /api/v1/patrol/route-points", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteRoutePoint)))
+	mux.Handle("GET /api/v1/patrol/runs", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListRuns)))
+	mux.Handle("POST /api/v1/patrol/runs", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateRun)))
+	mux.Handle("GET /api/v1/patrol/runs/{runId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.GetRun)))
+	mux.Handle("PATCH /api/v1/patrol/runs/{runId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.PatchRun)))
+	mux.Handle("DELETE /api/v1/patrol/runs/{runId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteRun)))
 	mux.Handle("GET /api/v1/patrol/progress", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.GetProgress)))
 	mux.Handle("GET /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListScans)))
 	mux.Handle("POST /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateScan)))
+	mux.Handle("PATCH /api/v1/patrol/scans/{scanId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.PatchScan)))
+	mux.Handle("DELETE /api/v1/patrol/scans/{scanId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteScan)))
 	mux.Handle("GET /api/v1/facility/spots", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.ListSpots)))
 	mux.Handle("POST /api/v1/facility/spots", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.CreateSpot)))
 	mux.Handle("GET /api/v1/facility/spots/{spotId}", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.GetSpot)))
@@ -103,6 +111,19 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("POST /api/v1/facility/scans", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.CreateScan)))
 	mux.Handle("GET /api/v1/recent-activities", auth.RequireAuth(tokenService, http.HandlerFunc(recentActivitiesHandler.List)))
 	mux.Handle("GET /api/v1/api-error-logs", auth.RequireAuth(tokenService, http.HandlerFunc(apiErrorLogHandler.List)))
+	mux.Handle("GET /api/v1/app-versions", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.List)))
+	mux.Handle("POST /api/v1/app-versions", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Create)))
+	mux.Handle("GET /api/v1/app-versions/check", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Check)))
+	mux.Handle("POST /api/v1/app-versions/upload", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Upload)))
+	mux.Handle("GET /api/v1/app-version-masters", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.ListMasters)))
+	mux.Handle("POST /api/v1/app-version-masters", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.CreateMaster)))
+	mux.Handle("POST /api/v1/app-version-masters/upload", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.UploadMaster)))
+	mux.Handle("GET /api/v1/app-version-masters/{masterId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.GetMaster)))
+	mux.Handle("PATCH /api/v1/app-version-masters/{masterId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.PatchMaster)))
+	mux.Handle("DELETE /api/v1/app-version-masters/{masterId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.DeleteMaster)))
+	mux.Handle("GET /api/v1/app-versions/{versionId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Get)))
+	mux.Handle("PATCH /api/v1/app-versions/{versionId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Patch)))
+	mux.Handle("DELETE /api/v1/app-versions/{versionId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Delete)))
 	mux.Handle("GET /api/v1/reports/attendance", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListAttendance)))
 	mux.Handle("GET /api/v1/reports/attendance/download", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.DownloadAttendance)))
 	mux.Handle("GET /api/v1/reports/visitors", auth.RequireAuth(tokenService, http.HandlerFunc(reportHandler.ListVisitors)))

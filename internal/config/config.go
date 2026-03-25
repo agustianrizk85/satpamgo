@@ -17,6 +17,7 @@ type Config struct {
 	JWTIssuer                  string
 	StorageRoot                string
 	UploadMaxBytes             int64
+	AppVersionUploadMaxBytes   int64
 	AutoCheckoutEnabled        bool
 	AutoCheckoutGraceMinutes   int
 	AutoCheckoutPollSeconds    int
@@ -39,6 +40,7 @@ func Load() (Config, error) {
 		JWTIssuer:                  getEnv("JWT_ISSUER", "satpam-go"),
 		StorageRoot:                getEnv("STORAGE_ROOT", "storage"),
 		UploadMaxBytes:             getInt64Env("UPLOAD_MAX_BYTES", 3*1024*1024),
+		AppVersionUploadMaxBytes:   getInt64Env("APP_VERSION_UPLOAD_MAX_BYTES", 250*1024*1024),
 		AutoCheckoutEnabled:        getBoolEnv("AUTO_CHECKOUT_ENABLED", false),
 		AutoCheckoutGraceMinutes:   getIntEnv("AUTO_CHECKOUT_GRACE_MINUTES", 5),
 		AutoCheckoutPollSeconds:    getIntEnv("AUTO_CHECKOUT_POLL_SECONDS", 60),
