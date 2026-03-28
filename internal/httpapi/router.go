@@ -116,6 +116,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/app-versions/check", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Check)))
 	mux.Handle("POST /api/v1/app-versions/upload", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Upload)))
 	mux.Handle("GET /api/v1/app-version-masters", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.ListMasters)))
+	mux.Handle("GET /api/v1/app-version-masters/check", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.CheckMaster)))
 	mux.Handle("POST /api/v1/app-version-masters", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.CreateMaster)))
 	mux.Handle("POST /api/v1/app-version-masters/upload", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.UploadMaster)))
 	mux.Handle("GET /api/v1/app-version-masters/{masterId}", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.GetMaster)))

@@ -296,6 +296,25 @@ func (h *Handler) Check(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) CheckMaster(w http.ResponseWriter, r *http.Request) {
+	_, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	versionName := strings.TrimSpace(r.URL.Query().Get("versionName"))
+	if versionName == "" {
+		web.WriteError(w, http.StatusBadRequest, "versionName is required")
+		return
+	}
+	result, err := h.repo.CheckMaster(r.Context(), versionName)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to check app version master")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) ListMasters(w http.ResponseWriter, r *http.Request) {
 	if !h.requireSuperAdmin(w, r) {
 		return

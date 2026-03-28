@@ -47,6 +47,14 @@ type VersionCheckResult struct {
 	DownloadURL    *string `json:"download_url"`
 }
 
+type MasterVersionCheckResult struct {
+	CurrentVersion string  `json:"current_version"`
+	LatestVersion  *string `json:"latest_version"`
+	ShouldDownload bool    `json:"should_download"`
+	IsMandatory    bool    `json:"is_mandatory"`
+	DownloadURL    *string `json:"download_url"`
+}
+
 type AppVersionMaster struct {
 	ID          string    `json:"id"`
 	VersionName string    `json:"version_name"`
@@ -412,6 +420,41 @@ func (r *Repository) Check(ctx context.Context, actorUserID, actorRole, placeID,
 	return &VersionCheckResult{
 		PlaceID:        placeID,
 		UserID:         userID,
+		CurrentVersion: currentVersion,
+		LatestVersion:  &latestVersion,
+		ShouldDownload: shouldDownload,
+		IsMandatory:    isMandatory,
+		DownloadURL:    &downloadURL,
+	}, nil
+}
+
+func (r *Repository) CheckMaster(ctx context.Context, currentVersion string) (*MasterVersionCheckResult, error) {
+	const sql = `
+		select version_name, download_url, is_mandatory
+		from app_version_masters
+		where is_active = true
+		order by created_at desc, updated_at desc, id desc
+		limit 1
+	`
+
+	var latestVersion, downloadURL string
+	var isMandatory bool
+	err := r.db.QueryRow(ctx, sql).Scan(&latestVersion, &downloadURL, &isMandatory)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &MasterVersionCheckResult{
+				CurrentVersion: currentVersion,
+				LatestVersion:  nil,
+				ShouldDownload: false,
+				IsMandatory:    false,
+				DownloadURL:    nil,
+			}, nil
+		}
+		return nil, err
+	}
+
+	shouldDownload := strings.TrimSpace(currentVersion) == "" || strings.TrimSpace(currentVersion) != strings.TrimSpace(latestVersion)
+	return &MasterVersionCheckResult{
 		CurrentVersion: currentVersion,
 		LatestVersion:  &latestVersion,
 		ShouldDownload: shouldDownload,
