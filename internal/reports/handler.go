@@ -2,6 +2,7 @@ package reports
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -140,6 +141,7 @@ func (h *Handler) ListPatrolScans(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, summary, err := h.repo.ListPatrolScans(r.Context(), filters, query)
 	if err != nil {
+		log.Printf("reports patrol-scans list: %v", err)
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol scan report")
 		return
 	}
@@ -432,6 +434,7 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, summary, err := h.repo.DownloadPatrolScans(r.Context(), filters, "scannedAt", listquery.SortDesc)
 	if err != nil {
+		log.Printf("reports patrol-scans download: %v", err)
 		web.WriteError(w, http.StatusInternalServerError, "Failed to generate patrol scan report")
 		return
 	}
