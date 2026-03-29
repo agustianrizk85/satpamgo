@@ -21,6 +21,23 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+func (r *Repository) patrolScanPhotoURLSelectExpr(ctx context.Context) string {
+	var exists bool
+	err := r.db.QueryRow(ctx, `
+		select exists (
+			select 1
+			from information_schema.columns
+			where table_schema = 'public'
+			  and table_name = 'patrol_scans'
+			  and column_name = 'photo_url'
+		)
+	`).Scan(&exists)
+	if err != nil || !exists {
+		return "null::text as photo_url"
+	}
+	return "nullif(btrim(ps.photo_url), '') as photo_url"
+}
+
 type AttendanceStatus string
 type FacilityStatus string
 
@@ -566,6 +583,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 	if !paged {
 		tzArg = fmt.Sprintf("$%d", len(args))
 	}
+	photoURLSelect := r.patrolScanPhotoURLSelectExpr(ctx)
 	sql := fmt.Sprintf(`
 		with filtered as (
 			select
@@ -580,7 +598,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 				ps.patrol_run_id,
 				ps.scanned_at,
 				to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at_label,
-				nullif(btrim(ps.photo_url), '') as photo_url,
+				%s,
 				ps.note,
 				ps.id
 			from patrol_scans ps
@@ -623,7 +641,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 		group by spot_id
 		order by %s %s, spot_id asc
 		%s
-	`, tzArg, whereSQL, sortColumn, sortDirection, limitOffset)
+	`, tzArg, photoURLSelect, whereSQL, sortColumn, sortDirection, limitOffset)
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, 0, err
