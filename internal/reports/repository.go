@@ -621,7 +621,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 			from filtered
 		)
 		select
-			min(place_id) as place_id,
+			min(place_id::text)::uuid as place_id,
 			min(place_name) as place_name,
 			spot_id,
 			min(spot_code) as spot_code,
@@ -630,7 +630,7 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 			count(*)::int as total_scans,
 			count(distinct patrol_run_id)::int as total_rounds,
 			max(scanned_at_label) filter (where latest_rank = 1) as last_scanned_at,
-			max(user_id) filter (where latest_rank = 1) as last_user_id,
+			max(user_id::text) filter (where latest_rank = 1)::uuid as last_user_id,
 			max(full_name) filter (where latest_rank = 1) as last_user_name,
 			max(patrol_run_id) filter (where latest_rank = 1) as last_patrol_run_id,
 			max(photo_url) filter (where photo_rank = 1 and photo_url is not null) as photo_url,
