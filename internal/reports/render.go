@@ -379,14 +379,15 @@ func measurePatrolSpotBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, w float64
 	infoW := w - infoX - 2
 	valueW := infoW - 28
 	infoHeight := maxFloat(
-		measureWrappedLabelValue(pdf, "Last Scan", formatDateTimeLabel(row.LastScannedAt), valueW, lineHeight),
+		measureWrappedLabelValue(pdf, "Scanned At", formatDateTimeLabel(row.LastScannedAt), valueW, lineHeight),
 		measureWrappedLabelValue(pdf, "Spot", safeText(row.SpotName, "-")+" ("+safeText(row.SpotCode, "-")+")", valueW, lineHeight)+
+			measureWrappedLabelValue(pdf, "Ronde", fmt.Sprintf("%d / %d", row.RoundNo, row.TotalRounds), valueW, lineHeight)+
 			measureWrappedLabelValue(pdf, "Status", row.SpotStatus, valueW, lineHeight)+
-			measureWrappedLabelValue(pdf, "Last User", row.LastUserName, valueW, lineHeight)+
-			measureWrappedLabelValue(pdf, "Last Run", row.LastPatrolRunID, valueW, lineHeight),
+			measureWrappedLabelValue(pdf, "User", row.LastUserName, valueW, lineHeight)+
+			measureWrappedLabelValue(pdf, "Run ID", row.LastPatrolRunID, valueW, lineHeight),
 	)
 	contentH := maxFloat(imageH, infoHeight) + padding*2
-	noteH := measureWrappedLabelValue(pdf, "Last Note", deref(row.LastNote), w-20, lineHeight)
+	noteH := measureWrappedLabelValue(pdf, "Note", deref(row.LastNote), w-20, lineHeight)
 	return topBandH + contentH + 9 + noteH + 6
 }
 
@@ -434,10 +435,11 @@ func renderPatrolSpotBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoo
 	infoX := x + imageW + 4
 	infoY := contentY + 1
 	infoW := w - (infoX - x) - 2
-	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Last Scan", formatDateTimeLabel(row.LastScannedAt))
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Scanned At", formatDateTimeLabel(row.LastScannedAt))
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Ronde", fmt.Sprintf("%d / %d", row.RoundNo, row.TotalRounds))
 	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Status", row.SpotStatus)
-	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Last User", row.LastUserName)
-	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Last Run", row.LastPatrolRunID)
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "User", row.LastUserName)
+	infoY += renderWrappedLabelValue(pdf, infoX, infoY, 28, infoW-28, lineHeight, "Run ID", row.LastPatrolRunID)
 
 	contentH := maxFloat(imageH, infoY-contentY) + padding
 	metaY := contentY + contentH
@@ -446,7 +448,7 @@ func renderPatrolSpotBlock(pdf *gofpdf.Fpdf, row PatrolScanReportRow, storageRoo
 	renderLabelValue(pdf, x+68, x+92, metaY+5.7, "Total Scan", stringifyInt(row.TotalScans))
 	renderLabelValue(pdf, x+125, x+148, metaY+5.7, "Total Ronde", stringifyInt(row.TotalRounds))
 	noteY := metaY + 9
-	noteH := renderWrappedLabelValue(pdf, x+2, noteY+2, 20, w-22, lineHeight, "Last Note", deref(row.LastNote))
+	noteH := renderWrappedLabelValue(pdf, x+2, noteY+2, 20, w-22, lineHeight, "Note", deref(row.LastNote))
 	pdf.Rect(x, noteY, w, noteH+4, "D")
 }
 

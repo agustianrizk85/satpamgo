@@ -439,7 +439,7 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sortPatrolReportRows(rows)
-	headers := []string{"Place", "Spot Code", "Spot Name", "Status", "Total Scans", "Total Rounds", "Last Scanned At", "Last User", "Last Run ID", "Photo", "Last Note"}
+	headers := []string{"Place", "Round No", "Spot Code", "Spot Name", "Status", "Total Scans", "Total Rounds", "Scanned At", "User", "Run ID", "Photo", "Note"}
 	body := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		photoStatus := "Not Available"
@@ -448,6 +448,7 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 		}
 		body = append(body, []string{
 			row.PlaceName,
+			stringifyInt(row.RoundNo),
 			row.SpotCode,
 			row.SpotName,
 			row.SpotStatus,
@@ -633,10 +634,13 @@ func attendanceRowSortTime(row AttendanceReportRow) time.Time {
 
 func sortPatrolReportRows(rows []PatrolScanReportRow) {
 	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].RoundNo != rows[j].RoundNo {
+			return rows[i].RoundNo < rows[j].RoundNo
+		}
 		ti, okI := parseReportTime(rows[i].LastScannedAt)
 		tj, okJ := parseReportTime(rows[j].LastScannedAt)
 		if okI && okJ && !ti.Equal(tj) {
-			return ti.After(tj)
+			return ti.Before(tj)
 		}
 		if okI != okJ {
 			return okI

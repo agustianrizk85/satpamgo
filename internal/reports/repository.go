@@ -112,6 +112,7 @@ type PatrolScanReportRow struct {
 	SpotCode        string  `json:"spot_code"`
 	SpotName        string  `json:"spot_name"`
 	SpotStatus      string  `json:"spot_status"`
+	RoundNo         int     `json:"round_no"`
 	TotalScans      int     `json:"total_scans"`
 	TotalRounds     int     `json:"total_rounds"`
 	LastScannedAt   string  `json:"last_scanned_at"`
@@ -488,8 +489,7 @@ func (r *Repository) ListPatrolScans(ctx context.Context, filters PatrolScanFilt
 }
 
 func (r *Repository) DownloadPatrolScans(ctx context.Context, filters PatrolScanFilters, sortBy string, sortOrder listquery.SortOrder) ([]PatrolScanReportRow, PatrolScanReportSummary, error) {
-	query := listquery.Query{Page: 1, PageSize: 100000, SortBy: sortBy, SortOrder: sortOrder}
-	rows, _, err := r.queryPatrolScans(ctx, filters, query, false)
+	rows, err := r.queryPatrolScansDownload(ctx, filters)
 	if err != nil {
 		return nil, PatrolScanReportSummary{}, err
 	}
@@ -498,6 +498,113 @@ func (r *Repository) DownloadPatrolScans(ctx context.Context, filters PatrolScan
 		return nil, PatrolScanReportSummary{}, err
 	}
 	return rows, summary, nil
+}
+
+func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters PatrolScanFilters) ([]PatrolScanReportRow, error) {
+	whereSQL, args := buildPatrolScanWhere(filters)
+	tzArg := fmt.Sprintf("$%d", len(args)+1)
+	args = append(args, defaultAttendanceTimezone)
+	photoURLSelect := r.patrolScanPhotoURLSelectExpr(ctx)
+	sql := fmt.Sprintf(`
+		with filtered as (
+			select
+				ps.place_id,
+				p.place_name,
+				ps.spot_id,
+				s.spot_code,
+				s.spot_name,
+				s.status as spot_status,
+				ps.user_id,
+				u.full_name,
+				ps.patrol_run_id,
+				ps.scanned_at,
+				to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at_label,
+				%s,
+				ps.note,
+				ps.id
+			from patrol_scans ps
+			join users u on u.id = ps.user_id
+			join places p on p.id = ps.place_id
+			join spots s on s.id = ps.spot_id
+			%s
+		),
+		run_order as (
+			select
+				patrol_run_id,
+				dense_rank() over(order by min(scanned_at) asc, patrol_run_id asc) as round_no
+			from filtered
+			group by patrol_run_id
+		),
+		round_totals as (
+			select count(*)::int as total_rounds
+			from run_order
+		),
+		ranked as (
+			select
+				*,
+				row_number() over(partition by spot_id, patrol_run_id order by scanned_at desc, id desc) as latest_rank,
+				row_number() over(
+					partition by spot_id, patrol_run_id
+					order by
+						case when photo_url is null then 1 else 0 end asc,
+						scanned_at desc,
+						id desc
+				) as photo_rank
+			from filtered
+		)
+		select
+			min(place_id::text)::uuid as place_id,
+			min(place_name) as place_name,
+			spot_id,
+			min(spot_code) as spot_code,
+			min(spot_name) as spot_name,
+			min(spot_status) as spot_status,
+			ro.round_no,
+			count(*)::int as total_scans,
+			rt.total_rounds,
+			max(scanned_at_label) filter (where latest_rank = 1) as last_scanned_at,
+			max(user_id::text) filter (where latest_rank = 1)::uuid as last_user_id,
+			max(full_name) filter (where latest_rank = 1) as last_user_name,
+			ranked.patrol_run_id,
+			max(photo_url) filter (where photo_rank = 1 and photo_url is not null) as photo_url,
+			max(note) filter (where latest_rank = 1) as last_note
+		from ranked
+		join run_order ro on ro.patrol_run_id = ranked.patrol_run_id
+		cross join round_totals rt
+		group by spot_id, ranked.patrol_run_id, ro.round_no, rt.total_rounds
+		order by ro.round_no asc, min(scanned_at) asc, min(spot_code) asc, spot_id asc
+	`, tzArg, photoURLSelect, whereSQL)
+	rowsDB, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsDB.Close()
+
+	data := make([]PatrolScanReportRow, 0)
+	for rowsDB.Next() {
+		var item PatrolScanReportRow
+		if err := rowsDB.Scan(
+			&item.PlaceID,
+			&item.PlaceName,
+			&item.SpotID,
+			&item.SpotCode,
+			&item.SpotName,
+			&item.SpotStatus,
+			&item.RoundNo,
+			&item.TotalScans,
+			&item.TotalRounds,
+			&item.LastScannedAt,
+			&item.LastUserID,
+			&item.LastUserName,
+			&item.LastPatrolRunID,
+			&item.PhotoURL,
+			&item.LastNote,
+		); err != nil {
+			return nil, err
+		}
+		data = append(data, item)
+	}
+	return data, rowsDB.Err()
 }
 
 func (r *Repository) PatrolScanDates(ctx context.Context, filters PatrolScanDateFilters) (PatrolScanDateSummary, error) {
