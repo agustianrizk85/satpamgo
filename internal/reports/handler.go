@@ -200,6 +200,25 @@ func (h *Handler) PatrolScanDates(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, summary)
 }
 
+func (h *Handler) PatrolScanRounds(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	filters, ok := h.parsePatrolFilters(w, r, current)
+	if !ok {
+		return
+	}
+	rounds, err := h.repo.PatrolScanRounds(r.Context(), filters)
+	if err != nil {
+		log.Printf("reports patrol-scans rounds: %v", err)
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol scan rounds")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]any{"data": rounds})
+}
+
 func (h *Handler) DownloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 	h.downloadPatrolScans(w, r)
 }

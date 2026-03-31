@@ -136,6 +136,12 @@ type PatrolScanDateSummary struct {
 	MaxDate string   `json:"max_date"`
 }
 
+type PatrolScanRoundOption struct {
+	RoundNo     int    `json:"round_no"`
+	PatrolRunID string `json:"patrol_run_id"`
+	StartedAt   string `json:"started_at"`
+}
+
 type FacilityScanReportRow struct {
 	ID        string  `json:"id"`
 	PlaceID   string  `json:"place_id"`
@@ -690,6 +696,43 @@ func (r *Repository) PatrolScanDates(ctx context.Context, filters PatrolScanDate
 	}
 
 	return out, nil
+}
+
+func (r *Repository) PatrolScanRounds(ctx context.Context, filters PatrolScanFilters) ([]PatrolScanRoundOption, error) {
+	whereSQL, args := buildPatrolScanWhere(filters)
+	args = append(args, defaultAttendanceTimezone)
+	tzArg := fmt.Sprintf("$%d", len(args))
+	sql := fmt.Sprintf(`
+		with filtered as (
+			select
+				ps.patrol_run_id,
+				min(ps.scanned_at) as started_at
+			from patrol_scans ps
+			%s
+			group by ps.patrol_run_id
+		)
+		select
+			dense_rank() over(order by started_at asc, patrol_run_id asc)::int as round_no,
+			patrol_run_id,
+			to_char(started_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as started_at
+		from filtered
+		order by round_no asc, patrol_run_id asc
+	`, whereSQL, tzArg)
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]PatrolScanRoundOption, 0)
+	for rows.Next() {
+		var item PatrolScanRoundOption
+		if err := rows.Scan(&item.RoundNo, &item.PatrolRunID, &item.StartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFilters, query listquery.Query, paged bool) ([]PatrolScanReportRow, int, error) {
