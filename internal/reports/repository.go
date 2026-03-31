@@ -181,6 +181,7 @@ type PatrolScanFilters struct {
 	UserID      string
 	SpotID      string
 	PatrolRunID string
+	RoundNo     int
 	FromDate    string
 	ToDate      string
 }
@@ -493,11 +494,30 @@ func (r *Repository) DownloadPatrolScans(ctx context.Context, filters PatrolScan
 	if err != nil {
 		return nil, PatrolScanReportSummary{}, err
 	}
-	summary, err := r.patrolScanSummary(ctx, filters)
-	if err != nil {
-		return nil, PatrolScanReportSummary{}, err
+	return rows, patrolScanDownloadSummary(rows), nil
+}
+
+func patrolScanDownloadSummary(rows []PatrolScanReportRow) PatrolScanReportSummary {
+	uniqueRuns := make(map[string]struct{})
+	uniqueSpots := make(map[string]struct{})
+	uniqueUsers := make(map[string]struct{})
+	for _, row := range rows {
+		if strings.TrimSpace(row.LastPatrolRunID) != "" {
+			uniqueRuns[row.LastPatrolRunID] = struct{}{}
+		}
+		if strings.TrimSpace(row.SpotID) != "" {
+			uniqueSpots[row.SpotID] = struct{}{}
+		}
+		if strings.TrimSpace(row.LastUserID) != "" {
+			uniqueUsers[row.LastUserID] = struct{}{}
+		}
 	}
-	return rows, summary, nil
+	return PatrolScanReportSummary{
+		TotalData:        len(rows),
+		UniquePatrolRuns: len(uniqueRuns),
+		UniqueSpots:      len(uniqueSpots),
+		UniqueUsers:      len(uniqueUsers),
+	}
 }
 
 func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters PatrolScanFilters) ([]PatrolScanReportRow, error) {
@@ -571,9 +591,10 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 		from ranked
 		join run_order ro on ro.patrol_run_id = ranked.patrol_run_id
 		cross join round_totals rt
+		%s
 		group by spot_id, ranked.patrol_run_id, ro.round_no, rt.total_rounds
 		order by ro.round_no asc, min(scanned_at) asc, min(spot_code) asc, spot_id asc
-	`, tzArg, photoURLSelect, whereSQL)
+	`, tzArg, photoURLSelect, whereSQL, buildPatrolRoundFilter(filters.RoundNo))
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -605,6 +626,13 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 		data = append(data, item)
 	}
 	return data, rowsDB.Err()
+}
+
+func buildPatrolRoundFilter(roundNo int) string {
+	if roundNo <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("where ro.round_no = %d", roundNo)
 }
 
 func (r *Repository) PatrolScanDates(ctx context.Context, filters PatrolScanDateFilters) (PatrolScanDateSummary, error) {

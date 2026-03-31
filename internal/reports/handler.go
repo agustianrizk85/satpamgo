@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
 	"sort"
 	"strings"
 	"time"
@@ -268,6 +269,14 @@ func (h *Handler) parsePatrolFilters(w http.ResponseWriter, r *http.Request, cur
 		PatrolRunID: strings.TrimSpace(r.URL.Query().Get("patrolRunId")),
 		FromDate:    strings.TrimSpace(r.URL.Query().Get("fromDate")),
 		ToDate:      strings.TrimSpace(r.URL.Query().Get("toDate")),
+	}
+	if rawRoundNo := strings.TrimSpace(r.URL.Query().Get("roundNo")); rawRoundNo != "" {
+		roundNo, err := strconv.Atoi(rawRoundNo)
+		if err != nil || roundNo <= 0 {
+			web.WriteError(w, http.StatusBadRequest, "roundNo must be positive integer")
+			return PatrolScanFilters{}, false
+		}
+		filters.RoundNo = roundNo
 	}
 	if !h.validateCommonFilters(r.Context(), w, current, filters.PlaceID, filters.UserID, filters.FromDate, filters.ToDate) {
 		return PatrolScanFilters{}, false
