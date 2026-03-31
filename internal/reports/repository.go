@@ -179,6 +179,7 @@ type PatrolScanFilters struct {
 	ActorRole   string
 	PlaceID     string
 	UserID      string
+	ShiftID     string
 	SpotID      string
 	PatrolRunID string
 	RoundNo     int
@@ -834,6 +835,14 @@ func buildPatrolScanWhere(filters PatrolScanFilters) (string, []any) {
 	if filters.UserID != "" {
 		args = append(args, filters.UserID)
 		where = append(where, fmt.Sprintf("ps.user_id = $%d", len(args)))
+	}
+	if filters.ShiftID != "" {
+		args = append(args, filters.ShiftID)
+		where = append(where, fmt.Sprintf(`ps.attendance_id in (
+			select a.id
+			from attendances a
+			where a.shift_id = $%d
+		)`, len(args)))
 	}
 	if filters.SpotID != "" {
 		args = append(args, filters.SpotID)

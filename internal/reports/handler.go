@@ -265,6 +265,7 @@ func (h *Handler) parsePatrolFilters(w http.ResponseWriter, r *http.Request, cur
 		ActorRole:   current.Role,
 		PlaceID:     strings.TrimSpace(r.URL.Query().Get("placeId")),
 		UserID:      strings.TrimSpace(r.URL.Query().Get("userId")),
+		ShiftID:     strings.TrimSpace(r.URL.Query().Get("shiftId")),
 		SpotID:      strings.TrimSpace(r.URL.Query().Get("spotId")),
 		PatrolRunID: strings.TrimSpace(r.URL.Query().Get("patrolRunId")),
 		FromDate:    strings.TrimSpace(r.URL.Query().Get("fromDate")),
@@ -283,6 +284,10 @@ func (h *Handler) parsePatrolFilters(w http.ResponseWriter, r *http.Request, cur
 	}
 	if filters.SpotID != "" && !web.IsUUID(filters.SpotID) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid spotId")
+		return PatrolScanFilters{}, false
+	}
+	if filters.ShiftID != "" && !web.IsUUID(filters.ShiftID) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid shiftId")
 		return PatrolScanFilters{}, false
 	}
 	return filters, true
