@@ -172,7 +172,7 @@ func (r *Repository) DeleteRoutePoint(ctx context.Context, id, placeID string) (
 	return out, nil
 }
 
-func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, placeID, userID, attendanceID, status string, query listquery.Query) (listquery.Response[PatrolRun], error) {
+func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, placeID, userID, attendanceID, shiftID, status, fromDate, toDate string, query listquery.Query) (listquery.Response[PatrolRun], error) {
 	sortColumn := map[string]string{
 		"runNo":            "pr.run_no",
 		"status":           "pr.status",
@@ -210,6 +210,7 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 			count(*) over()::int as total_count
 		from patrol_runs pr
 		left join patrol_scans ps on ps.patrol_run_id = pr.id
+		left join attendances a on a.id = pr.attendance_id
 		where pr.place_id = $1
 	`
 	args := []any{placeID}
@@ -229,9 +230,21 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 		args = append(args, attendanceID)
 		sql += fmt.Sprintf(" and pr.attendance_id = $%d", len(args))
 	}
+	if shiftID != "" {
+		args = append(args, shiftID)
+		sql += fmt.Sprintf(" and a.shift_id = $%d", len(args))
+	}
 	if status != "" {
 		args = append(args, status)
 		sql += fmt.Sprintf(" and lower(pr.status) = lower($%d)", len(args))
+	}
+	if fromDate != "" {
+		args = append(args, fromDate)
+		sql += fmt.Sprintf(" and (pr.started_at at time zone 'Asia/Jakarta')::date >= $%d::date", len(args))
+	}
+	if toDate != "" {
+		args = append(args, toDate)
+		sql += fmt.Sprintf(" and (pr.started_at at time zone 'Asia/Jakarta')::date <= $%d::date", len(args))
 	}
 
 	args = append(args, query.PageSize, query.Offset)

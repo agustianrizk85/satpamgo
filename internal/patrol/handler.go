@@ -20,6 +20,24 @@ func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
 	return &Handler{repo: repo, authRepo: authRepo}
 }
 
+func isDateOnly(v string) bool {
+	if len(v) != 10 {
+		return false
+	}
+	for i, r := range v {
+		if i == 4 || i == 7 {
+			if r != '-' {
+				return false
+			}
+			continue
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *Handler) requirePlaceAdminAccess(w http.ResponseWriter, r *http.Request, placeID string) bool {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -145,12 +163,31 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	attendanceID := strings.TrimSpace(r.URL.Query().Get("attendanceId"))
+	shiftID := strings.TrimSpace(r.URL.Query().Get("shiftId"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	fromDate := strings.TrimSpace(r.URL.Query().Get("fromDate"))
+	toDate := strings.TrimSpace(r.URL.Query().Get("toDate"))
 	if attendanceID != "" && !web.IsUUID(attendanceID) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
 	}
-	result, err := h.repo.ListRuns(r.Context(), current.UserID, current.Role, placeID, userID, attendanceID, status, query)
+	if shiftID != "" && !web.IsUUID(shiftID) {
+		web.WriteError(w, http.StatusBadRequest, "shiftId must be valid UUID")
+		return
+	}
+	if fromDate != "" && !isDateOnly(fromDate) {
+		web.WriteError(w, http.StatusBadRequest, "fromDate must use YYYY-MM-DD")
+		return
+	}
+	if toDate != "" && !isDateOnly(toDate) {
+		web.WriteError(w, http.StatusBadRequest, "toDate must use YYYY-MM-DD")
+		return
+	}
+	if fromDate != "" && toDate != "" && fromDate > toDate {
+		web.WriteError(w, http.StatusBadRequest, "fromDate cannot be greater than toDate")
+		return
+	}
+	result, err := h.repo.ListRuns(r.Context(), current.UserID, current.Role, placeID, userID, attendanceID, shiftID, status, fromDate, toDate, query)
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol runs")
 		return
