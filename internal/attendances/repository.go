@@ -159,7 +159,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 }
 
 func (r *Repository) Create(ctx context.Context, input CreateInput) (string, error) {
-	if err := r.hydrateAssignmentAndShift(ctx, &input); err != nil {
+	if err := r.applyAutomaticCreateDefaults(ctx, &input); err != nil {
 		return "", err
 	}
 	if err := r.deriveLateStatusOnCreate(ctx, &input); err != nil {
@@ -186,6 +186,19 @@ func (r *Repository) Create(ctx context.Context, input CreateInput) (string, err
 	return id, nil
 }
 
+func (r *Repository) applyAutomaticCreateDefaults(ctx context.Context, input *CreateInput) error {
+	if err := r.autoFillCheckInForPlaceAdmin(ctx, input); err != nil {
+		return err
+	}
+	if err := r.autoFillShift(ctx, input); err != nil {
+		return err
+	}
+	if err := r.hydrateAssignmentAndShift(ctx, input); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Repository) deriveLateStatusOnCreate(ctx context.Context, input *CreateInput) error {
 	if input.CheckInAt == nil || input.ShiftID == nil {
 		return nil
@@ -203,6 +216,48 @@ func (r *Repository) deriveLateStatusOnCreate(ctx context.Context, input *Create
 		return nil
 	}
 	input.Status = "PRESENT"
+	return nil
+}
+
+func (r *Repository) autoFillCheckInForPlaceAdmin(ctx context.Context, input *CreateInput) error {
+	if input.CheckInAt != nil || input.CheckOutAt != nil {
+		return nil
+	}
+
+	isPlaceAdmin, err := r.hasPlaceRole(ctx, input.UserID, input.PlaceID, auth.PlaceRoleAdmin)
+	if err != nil {
+		return err
+	}
+	if !isPlaceAdmin {
+		return nil
+	}
+
+	nowJakarta := time.Now().In(time.FixedZone("Asia/Jakarta", 7*60*60))
+	value := nowJakarta.Format(time.RFC3339)
+	input.CheckInAt = &value
+	if input.SubmitAt == nil {
+		input.SubmitAt = &value
+	}
+	return nil
+}
+
+func (r *Repository) autoFillShift(ctx context.Context, input *CreateInput) error {
+	if input.ShiftID != nil {
+		return nil
+	}
+
+	referenceAt, err := resolveAttendanceReferenceTime(input)
+	if err != nil {
+		return err
+	}
+
+	shiftID, err := r.findBestShiftForAttendance(ctx, input.PlaceID, referenceAt)
+	if err != nil {
+		return err
+	}
+	if shiftID != nil {
+		input.ShiftID = shiftID
+	}
 	return nil
 }
 
@@ -232,11 +287,12 @@ func (r *Repository) hydrateAssignmentAndShift(ctx context.Context, input *Creat
 		where place_id = $1
 		  and user_id = $2
 		  and is_active = true
+		  and ($3::uuid is null or shift_id = $3::uuid)
 		order by updated_at desc, created_at desc, id desc
 		limit 1
 	`
 	var assignmentID, shiftID string
-	err := r.db.QueryRow(ctx, sql, input.PlaceID, input.UserID).Scan(&assignmentID, &shiftID)
+	err := r.db.QueryRow(ctx, sql, input.PlaceID, input.UserID, input.ShiftID).Scan(&assignmentID, &shiftID)
 	switch {
 	case err == nil:
 		if input.AssignmentID == nil {
@@ -250,6 +306,82 @@ func (r *Repository) hydrateAssignmentAndShift(ctx context.Context, input *Creat
 		return nil
 	default:
 		return err
+	}
+}
+
+func (r *Repository) hasPlaceRole(ctx context.Context, userID, placeID, roleCode string) (bool, error) {
+	const sql = `
+		select 1
+		from user_place_roles upr
+		join roles r on r.id = upr.role_id
+		where upr.user_id = $1
+		  and upr.place_id = $2
+		  and upr.is_active = true
+		  and r.code = $3
+		limit 1
+	`
+	var ok int
+	err := r.db.QueryRow(ctx, sql, userID, placeID, roleCode).Scan(&ok)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+func resolveAttendanceReferenceTime(input *CreateInput) (time.Time, error) {
+	if input.CheckInAt != nil {
+		return time.Parse(time.RFC3339, *input.CheckInAt)
+	}
+	if input.SubmitAt != nil {
+		return time.Parse(time.RFC3339, *input.SubmitAt)
+	}
+	return time.Now(), nil
+}
+
+func (r *Repository) findBestShiftForAttendance(ctx context.Context, placeID string, referenceAt time.Time) (*string, error) {
+	const sql = `
+		with ref as (
+			select (($2::timestamptz at time zone 'Asia/Jakarta')::time) as local_time
+		)
+		select s.id
+		from shifts s
+		cross join ref
+		where s.place_id = $1
+		  and s.is_active = true
+		order by
+			case
+				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then 0
+				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then 0
+				when ref.local_time >= s.start_time then 1
+				else 2
+			end asc,
+			case
+				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then (ref.local_time - s.start_time)
+				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then
+					case
+						when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
+						else (interval '24 hours' - (s.start_time - ref.local_time))
+					end
+				when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
+				else (s.start_time - ref.local_time)
+			end asc,
+			s.start_time asc,
+			s.id asc
+		limit 1
+	`
+	var shiftID string
+	err := r.db.QueryRow(ctx, sql, placeID, referenceAt.Format(time.RFC3339)).Scan(&shiftID)
+	switch {
+	case err == nil:
+		return &shiftID, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, err
 	}
 }
 

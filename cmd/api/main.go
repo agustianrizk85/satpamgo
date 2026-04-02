@@ -29,6 +29,7 @@ import (
 	"satpam-go/internal/shifts"
 	"satpam-go/internal/spotassignments"
 	"satpam-go/internal/spots"
+	"satpam-go/internal/tokenconfig"
 	"satpam-go/internal/userplaceroles"
 	"satpam-go/internal/users"
 	"satpam-go/internal/visitors"
@@ -57,6 +58,7 @@ func main() {
 	spotRepo := spots.NewRepository(dbPool)
 	spotAssignmentRepo := spotassignments.NewRepository(dbPool)
 	attendanceConfigRepo := attendanceconfig.NewRepository(dbPool)
+	tokenConfigRepo := tokenconfig.NewRepository(dbPool)
 	attendanceRepo := attendances.NewRepository(dbPool)
 	visitorRepo := visitors.NewRepository(dbPool)
 	leaveRequestRepo := leaverequests.NewRepository(dbPool)
@@ -68,7 +70,18 @@ func main() {
 	appVersionRepo := appversions.NewRepository(dbPool)
 	appVersionStorage := appversions.NewStorage(cfg.StorageRoot)
 
-	authHandler := auth.NewHandler(authRepo, tokenService)
+	resolveTokenTTL := func(ctx context.Context) (time.Duration, time.Duration, error) {
+		cfg, err := tokenConfigRepo.Get(ctx)
+		if err != nil {
+			if errors.Is(err, tokenconfig.ErrNotFound) {
+				return 8 * time.Hour, 30 * 24 * time.Hour, nil
+			}
+			return 0, 0, err
+		}
+		return time.Duration(cfg.AccessTTLSeconds) * time.Second, time.Duration(cfg.RefreshTTLSeconds) * time.Second, nil
+	}
+
+	authHandler := auth.NewHandler(authRepo, tokenService, resolveTokenTTL)
 	userHandler := users.NewHandler(userRepo, authRepo)
 	roleHandler := roles.NewHandler(roleRepo, authRepo)
 	placeHandler := places.NewHandler(placeRepo, authRepo)
@@ -77,6 +90,7 @@ func main() {
 	spotHandler := spots.NewHandler(spotRepo, authRepo)
 	spotAssignmentHandler := spotassignments.NewHandler(spotAssignmentRepo, authRepo)
 	attendanceConfigHandler := attendanceconfig.NewHandler(attendanceConfigRepo, authRepo)
+	tokenConfigHandler := tokenconfig.NewHandler(tokenConfigRepo, authRepo)
 	attendanceHandler := attendances.NewHandler(attendanceRepo)
 	visitorHandler := visitors.NewHandler(visitorRepo, authRepo)
 	leaveRequestHandler := leaverequests.NewHandler(leaveRequestRepo)
@@ -97,7 +111,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, appVersionHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
+		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, tokenConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, appVersionHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,

@@ -23,6 +23,7 @@ func main() {
 		"migrations/20260321_create_api_error_logs.sql",
 		"migrations/20260324_create_app_versions.sql",
 		"migrations/20260324_create_app_version_masters.sql",
+		"migrations/20260402_create_token_configs.sql",
 	}
 
 	db, err := sql.Open("pgx", dsn)

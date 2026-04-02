@@ -1,10 +1,12 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,14 +14,16 @@ import (
 )
 
 type Handler struct {
-	repo         *Repository
-	tokenService *TokenService
+	repo           *Repository
+	tokenService   *TokenService
+	resolveTokenTTL func(context.Context) (time.Duration, time.Duration, error)
 }
 
-func NewHandler(repo *Repository, tokenService *TokenService) *Handler {
+func NewHandler(repo *Repository, tokenService *TokenService, resolveTokenTTL func(context.Context) (time.Duration, time.Duration, error)) *Handler {
 	return &Handler{
-		repo:         repo,
-		tokenService: tokenService,
+		repo:            repo,
+		tokenService:    tokenService,
+		resolveTokenTTL: resolveTokenTTL,
 	}
 }
 
@@ -52,9 +56,20 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, err := h.tokenService.Sign(user.ID, user.RoleCode)
+	accessTTL, refreshTTL, err := h.resolveTokenTTLs(r)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load token config")
+		return
+	}
+
+	accessToken, err := h.tokenService.SignWithTTL(user.ID, user.RoleCode, accessTTL)
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to sign access token")
+		return
+	}
+	refreshToken, err := h.tokenService.SignRefreshWithTTL(user.ID, user.RoleCode, refreshTTL)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to sign refresh token")
 		return
 	}
 
@@ -70,7 +85,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	web.WriteJSON(w, http.StatusOK, map[string]any{
-		"accessToken": accessToken,
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
 		"user": map[string]any{
 			"id":             user.ID,
 			"fullName":       user.FullName,
@@ -81,6 +97,68 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			"placeAccesses":  placeAccesses,
 		},
 	})
+}
+
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RefreshToken string `json:"refreshToken"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Invalid body")
+		return
+	}
+
+	body.RefreshToken = strings.TrimSpace(body.RefreshToken)
+	if body.RefreshToken == "" {
+		web.WriteError(w, http.StatusBadRequest, "refreshToken is required")
+		return
+	}
+
+	claims, err := h.tokenService.VerifyRefresh(body.RefreshToken)
+	if err != nil {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
+		return
+	}
+
+	user, err := h.repo.FindUserByID(r.Context(), claims.UserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			web.WriteError(w, http.StatusUnauthorized, "User not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to refresh token")
+		return
+	}
+
+	accessTTL, refreshTTL, err := h.resolveTokenTTLs(r)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load token config")
+		return
+	}
+
+	accessToken, err := h.tokenService.SignWithTTL(user.ID, user.RoleCode, accessTTL)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to sign access token")
+		return
+	}
+	refreshToken, err := h.tokenService.SignRefreshWithTTL(user.ID, user.RoleCode, refreshTTL)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to sign refresh token")
+		return
+	}
+
+	web.WriteJSON(w, http.StatusOK, map[string]any{
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
+	})
+}
+
+func (h *Handler) resolveTokenTTLs(r *http.Request) (time.Duration, time.Duration, error) {
+	if h.resolveTokenTTL == nil {
+		return 8 * time.Hour, 30 * 24 * time.Hour, nil
+	}
+	return h.resolveTokenTTL(r.Context())
 }
 
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {

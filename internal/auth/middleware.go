@@ -31,7 +31,7 @@ func RequireAuth(tokenService *TokenService, next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := tokenService.Verify(parts[1])
+		claims, err := tokenService.VerifyAccess(parts[1])
 		if err != nil {
 			web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
 			return

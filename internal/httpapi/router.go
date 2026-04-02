@@ -19,13 +19,14 @@ import (
 	"satpam-go/internal/shifts"
 	"satpam-go/internal/spotassignments"
 	"satpam-go/internal/spots"
+	"satpam-go/internal/tokenconfig"
 	"satpam-go/internal/userplaceroles"
 	"satpam-go/internal/users"
 	"satpam-go/internal/visitors"
 	"satpam-go/internal/web"
 )
 
-func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, appVersionHandler *appversions.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
+func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, tokenConfigHandler *tokenconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, appVersionHandler *appversions.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -36,6 +37,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	})
 
 	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/v1/auth/refresh", authHandler.Refresh)
 	mux.Handle("GET /api/v1/auth/me", auth.RequireAuth(tokenService, http.HandlerFunc(authHandler.Me)))
 	mux.Handle("GET /api/v1/users", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("POST /api/v1/users", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.CreateUser)))
@@ -72,6 +74,8 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("DELETE /api/v1/spot-assignments/{assignmentId}", auth.RequireAuth(tokenService, http.HandlerFunc(spotAssignmentHandler.Delete)))
 	mux.Handle("GET /api/v1/attendance-config", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceConfigHandler.Get)))
 	mux.Handle("POST /api/v1/attendance-config", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceConfigHandler.Upsert)))
+	mux.Handle("GET /api/v1/token-config", auth.RequireAuth(tokenService, http.HandlerFunc(tokenConfigHandler.Get)))
+	mux.Handle("POST /api/v1/token-config", auth.RequireAuth(tokenService, http.HandlerFunc(tokenConfigHandler.Upsert)))
 	mux.Handle("GET /api/v1/attendances", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.List)))
 	mux.Handle("POST /api/v1/attendances", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.Create)))
 	mux.Handle("PATCH /api/v1/attendances/{attendanceId}", auth.RequireAuth(tokenService, http.HandlerFunc(attendanceHandler.Patch)))

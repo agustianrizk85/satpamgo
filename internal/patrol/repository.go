@@ -408,6 +408,9 @@ func (r *Repository) CreateRun(ctx context.Context, placeID, userID string, atte
 	}
 	defer tx.Rollback(ctx)
 
+	// Patrol runs are now scoped only by place + user, not attendance.
+	attendanceID = nil
+
 	resolvedRunNo := 0
 	if runNo != nil && *runNo > 0 {
 		resolvedRunNo = *runNo
@@ -779,10 +782,8 @@ func (r *Repository) DeleteScan(ctx context.Context, scanID string) (string, err
 }
 
 func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, scannedAt, submitAt, photoURL, note *string) (*CreateScanResult, error) {
-	resolvedAttendanceID, err := r.resolveAttendanceID(ctx, placeID, userID, attendanceID, scannedAt)
-	if err != nil {
-		return nil, err
-	}
+	// Patrol scans are stored independently from attendance.
+	attendanceID = nil
 
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -795,14 +796,14 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID str
 		return nil, err
 	}
 
-	runID, runNo, isNewRun, err := r.ensureActiveRun(ctx, tx, placeID, userID, resolvedAttendanceID, totalActiveSpots, scannedAt)
+	runID, runNo, isNewRun, err := r.ensureActiveRun(ctx, tx, placeID, userID, totalActiveSpots, scannedAt)
 	if err != nil {
 		return nil, err
 	}
 
 	const sql = `insert into patrol_scans (place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,$5,coalesce($6::timestamptz, now()),coalesce($7::timestamptz, now()),$8,$9) returning id`
 	var id string
-	err = tx.QueryRow(ctx, sql, placeID, userID, spotID, resolvedAttendanceID, runID, scannedAt, submitAt, photoURL, note).Scan(&id)
+	err = tx.QueryRow(ctx, sql, placeID, userID, spotID, attendanceID, runID, scannedAt, submitAt, photoURL, note).Scan(&id)
 	if err != nil {
 		switch {
 		case isPgCode(err, "23505"):
@@ -870,8 +871,8 @@ func (r *Repository) countActiveRouteSpots(ctx context.Context, tx pgx.Tx, place
 	return total, err
 }
 
-func (r *Repository) ensureActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string, attendanceID *string, totalActiveSpots int, startedAt *string) (string, int, bool, error) {
-	activeRunID, activeRunNo, activeRunTotal, found, err := r.findActiveRun(ctx, tx, placeID, userID, attendanceID)
+func (r *Repository) ensureActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string, totalActiveSpots int, startedAt *string) (string, int, bool, error) {
+	activeRunID, activeRunNo, activeRunTotal, found, err := r.findActiveRun(ctx, tx, placeID, userID)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -888,7 +889,7 @@ func (r *Repository) ensureActiveRun(ctx context.Context, tx pgx.Tx, placeID, us
 		}
 	}
 
-	runNo, err := r.nextRunNo(ctx, tx, placeID, userID, attendanceID)
+	runNo, err := r.nextRunNo(ctx, tx, placeID, userID, nil)
 	if err != nil {
 		return "", 0, false, err
 	}
@@ -897,19 +898,18 @@ func (r *Repository) ensureActiveRun(ctx context.Context, tx pgx.Tx, placeID, us
 		insert into patrol_runs (id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at)
 		values ($1,$2,$3,$4,$5,$6,'active',coalesce($7::timestamptz, now()))
 	`
-	if _, err := tx.Exec(ctx, sql, runID, placeID, userID, attendanceID, runNo, totalActiveSpots, startedAt); err != nil {
+	if _, err := tx.Exec(ctx, sql, runID, placeID, userID, nil, runNo, totalActiveSpots, startedAt); err != nil {
 		return "", 0, false, err
 	}
 	return runID, runNo, true, nil
 }
 
-func (r *Repository) findActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string, attendanceID *string) (string, int, int, bool, error) {
+func (r *Repository) findActiveRun(ctx context.Context, tx pgx.Tx, placeID, userID string) (string, int, int, bool, error) {
 	const sql = `
 		select id, run_no, total_active_spots
 		from patrol_runs
 		where place_id = $1
 		  and user_id = $2
-		  and attendance_id is not distinct from $3::uuid
 		  and status = 'active'
 		order by run_no desc, created_at desc, id desc
 		limit 1
@@ -917,7 +917,7 @@ func (r *Repository) findActiveRun(ctx context.Context, tx pgx.Tx, placeID, user
 	`
 	var runID string
 	var runNo, totalActiveSpots int
-	err := tx.QueryRow(ctx, sql, placeID, userID, attendanceID).Scan(&runID, &runNo, &totalActiveSpots)
+	err := tx.QueryRow(ctx, sql, placeID, userID).Scan(&runID, &runNo, &totalActiveSpots)
 	switch {
 	case err == nil:
 		return runID, runNo, totalActiveSpots, true, nil
@@ -934,10 +934,9 @@ func (r *Repository) nextRunNo(ctx context.Context, tx pgx.Tx, placeID, userID s
 		from patrol_runs
 		where place_id = $1
 		  and user_id = $2
-		  and attendance_id is not distinct from $3::uuid
 	`
 	var runNo int
-	err := tx.QueryRow(ctx, sql, placeID, userID, attendanceID).Scan(&runNo)
+	err := tx.QueryRow(ctx, sql, placeID, userID).Scan(&runNo)
 	return runNo, err
 }
 

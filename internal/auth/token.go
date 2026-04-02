@@ -10,6 +10,7 @@ import (
 type Claims struct {
 	UserID string `json:"userId"`
 	Role   string `json:"role"`
+	Type   string `json:"type"`
 	jwt.RegisteredClaims
 }
 
@@ -25,19 +26,36 @@ func NewTokenService(secret, issuer string) *TokenService {
 	}
 }
 
-func (s *TokenService) Sign(userID, role string) (string, error) {
+func (s *TokenService) signToken(userID, role, tokenType string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
 		UserID: userID,
 		Role:   role,
+		Type:   tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    s.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(8 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	})
 
 	return token.SignedString(s.secret)
+}
+
+func (s *TokenService) Sign(userID, role string) (string, error) {
+	return s.signToken(userID, role, "access", 8*time.Hour)
+}
+
+func (s *TokenService) SignWithTTL(userID, role string, ttl time.Duration) (string, error) {
+	return s.signToken(userID, role, "access", ttl)
+}
+
+func (s *TokenService) SignRefresh(userID, role string) (string, error) {
+	return s.signToken(userID, role, "refresh", 30*24*time.Hour)
+}
+
+func (s *TokenService) SignRefreshWithTTL(userID, role string, ttl time.Duration) (string, error) {
+	return s.signToken(userID, role, "refresh", ttl)
 }
 
 func (s *TokenService) Verify(raw string) (*Claims, error) {
@@ -52,9 +70,31 @@ func (s *TokenService) Verify(raw string) (*Claims, error) {
 	}
 
 	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid || claims.UserID == "" || claims.Role == "" {
+	if !ok || !token.Valid || claims.UserID == "" || claims.Role == "" || claims.Type == "" {
 		return nil, errors.New("invalid token claims")
 	}
 
+	return claims, nil
+}
+
+func (s *TokenService) VerifyAccess(raw string) (*Claims, error) {
+	claims, err := s.Verify(raw)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Type != "access" {
+		return nil, errors.New("invalid access token")
+	}
+	return claims, nil
+}
+
+func (s *TokenService) VerifyRefresh(raw string) (*Claims, error) {
+	claims, err := s.Verify(raw)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Type != "refresh" {
+		return nil, errors.New("invalid refresh token")
+	}
 	return claims, nil
 }
