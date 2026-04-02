@@ -501,12 +501,22 @@ func (h *Handler) downloadPatrolScans(w http.ResponseWriter, r *http.Request) {
 		"Unique Users: " + stringifyInt(summary.UniqueUsers),
 	}
 	if format == "pdf" {
+		userLabel := h.repo.resolveUserLabel(r.Context(), filters.UserID)
+		shiftLabel := h.repo.resolveShiftLabel(r.Context(), filters.ShiftID)
+		roundLabel := "ALL"
+		if filters.RoundNo > 0 {
+			roundLabel = stringifyInt(filters.RoundNo)
+		}
 		content, err := renderPatrolPDF(patrolPDFInput{
 			Title:       "Laporan Patrol Scan",
 			PlaceName:   resolvePatrolPlaceName(filters, rows),
 			FromDate:    filters.FromDate,
 			ToDate:      filters.ToDate,
 			GeneratedBy: current.UserID,
+			UserLabel:   userLabel,
+			ShiftLabel:  shiftLabel,
+			RoundLabel:  roundLabel,
+			TotalPatrol: stringifyInt(summary.TotalData),
 			Rows:        rows,
 			StorageRoot: h.storageRoot,
 		})

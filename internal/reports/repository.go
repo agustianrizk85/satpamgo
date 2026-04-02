@@ -21,6 +21,32 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+func (r *Repository) resolveUserLabel(ctx context.Context, userID string) string {
+	value := strings.TrimSpace(userID)
+	if value == "" {
+		return "ALL"
+	}
+	var fullName string
+	err := r.db.QueryRow(ctx, `select full_name from users where id = $1 limit 1`, value).Scan(&fullName)
+	if err != nil || strings.TrimSpace(fullName) == "" {
+		return value
+	}
+	return fullName
+}
+
+func (r *Repository) resolveShiftLabel(ctx context.Context, shiftID string) string {
+	value := strings.TrimSpace(shiftID)
+	if value == "" {
+		return "ALL"
+	}
+	var name string
+	err := r.db.QueryRow(ctx, `select name from shifts where id = $1 limit 1`, value).Scan(&name)
+	if err != nil || strings.TrimSpace(name) == "" {
+		return value
+	}
+	return name
+}
+
 func (r *Repository) patrolScanPhotoURLSelectExpr(ctx context.Context) string {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
