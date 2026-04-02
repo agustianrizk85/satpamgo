@@ -36,7 +36,28 @@ func main() {
 		panic(err)
 	}
 
+	if _, err := db.Exec(`
+		create table if not exists schema_migrations (
+			filename text primary key,
+			applied_at timestamptz not null default now()
+		)
+	`); err != nil {
+		panic(fmt.Errorf("failed ensure schema_migrations: %w", err))
+	}
+
 	for _, file := range files {
+		var alreadyApplied bool
+		if err := db.QueryRow(
+			`select exists(select 1 from schema_migrations where filename = $1)`,
+			file,
+		).Scan(&alreadyApplied); err != nil {
+			panic(fmt.Errorf("failed check %s: %w", file, err))
+		}
+		if alreadyApplied {
+			fmt.Println("skipping:", file)
+			continue
+		}
+
 		fmt.Println("running:", file)
 
 		b, err := os.ReadFile(file)
@@ -44,8 +65,26 @@ func main() {
 			panic(err)
 		}
 
-		if _, err := db.Exec(string(b)); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			panic(fmt.Errorf("failed begin %s: %w", file, err))
+		}
+
+		if _, err := tx.Exec(string(b)); err != nil {
+			_ = tx.Rollback()
 			panic(fmt.Errorf("failed %s: %w", file, err))
+		}
+
+		if _, err := tx.Exec(
+			`insert into schema_migrations (filename) values ($1)`,
+			file,
+		); err != nil {
+			_ = tx.Rollback()
+			panic(fmt.Errorf("failed mark %s: %w", file, err))
+		}
+
+		if err := tx.Commit(); err != nil {
+			panic(fmt.Errorf("failed commit %s: %w", file, err))
 		}
 	}
 
