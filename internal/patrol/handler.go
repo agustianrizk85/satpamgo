@@ -142,6 +142,197 @@ func (h *Handler) DeleteRoutePoint(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, map[string]string{"id": out})
 }
 
+func (h *Handler) ListRoundMasters(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	placeID := strings.TrimSpace(r.URL.Query().Get("placeId"))
+	if !web.IsUUID(placeID) {
+		web.WriteError(w, http.StatusBadRequest, "placeId is required")
+		return
+	}
+	query, message, ok := listquery.Parse(r, listquery.Options{AllowedSortBy: []string{"roundNo", "isActive", "createdAt", "updatedAt"}, DefaultSortBy: "roundNo", DefaultSortOrder: listquery.SortAsc})
+	if !ok {
+		web.WriteError(w, http.StatusBadRequest, message)
+		return
+	}
+	result, err := h.repo.ListRoundMasters(r.Context(), current.UserID, current.Role, placeID, query)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol round masters")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) CreateRoundMaster(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PlaceID  string `json:"placeId"`
+		RoundNo  int    `json:"roundNo"`
+		IsActive *bool  `json:"isActive"`
+	}
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Invalid body")
+		return
+	}
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || body.RoundNo < 1 {
+		web.WriteError(w, http.StatusBadRequest, "placeId and roundNo are required")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, strings.TrimSpace(body.PlaceID)) {
+		return
+	}
+	isActive := true
+	if body.IsActive != nil {
+		isActive = *body.IsActive
+	}
+	item, err := h.repo.CreateRoundMaster(r.Context(), strings.TrimSpace(body.PlaceID), body.RoundNo, isActive)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrAlreadyExists):
+			web.WriteError(w, http.StatusConflict, "Patrol round master already exists")
+		case errors.Is(err, ErrForeignKey):
+			web.WriteError(w, http.StatusBadRequest, "Related place not found")
+		default:
+			web.WriteError(w, http.StatusInternalServerError, "Failed to create patrol round master")
+		}
+		return
+	}
+	web.WriteJSON(w, http.StatusCreated, item)
+}
+
+func (h *Handler) PatchRoundMaster(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("roundMasterId")
+	if !web.IsUUID(id) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid roundMasterId")
+		return
+	}
+	currentMaster, err := h.repo.GetRoundMaster(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrPatrolRoundMasterNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Patrol round master not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol round master")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, currentMaster.PlaceID) {
+		return
+	}
+	var body map[string]any
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Invalid body")
+		return
+	}
+	var roundNo *int
+	var isActive *bool
+	if raw, exists := body["roundNo"]; exists {
+		value, ok := raw.(float64)
+		if !ok || int(value) < 1 {
+			web.WriteError(w, http.StatusBadRequest, "roundNo must be number >= 1")
+			return
+		}
+		v := int(value)
+		roundNo = &v
+	}
+	if raw, exists := body["isActive"]; exists {
+		value, ok := raw.(bool)
+		if !ok {
+			web.WriteError(w, http.StatusBadRequest, "isActive must be boolean")
+			return
+		}
+		isActive = &value
+	}
+	item, err := h.repo.UpdateRoundMaster(r.Context(), id, roundNo, isActive)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPatrolRoundMasterNotFound):
+			web.WriteError(w, http.StatusNotFound, "Patrol round master not found")
+		case errors.Is(err, ErrAlreadyExists):
+			web.WriteError(w, http.StatusConflict, "Patrol round master already exists")
+		default:
+			web.WriteError(w, http.StatusInternalServerError, "Failed to update patrol round master")
+		}
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) DeleteRoundMaster(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("roundMasterId")
+	if !web.IsUUID(id) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid roundMasterId")
+		return
+	}
+	currentMaster, err := h.repo.GetRoundMaster(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrPatrolRoundMasterNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Patrol round master not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol round master")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, currentMaster.PlaceID) {
+		return
+	}
+	out, err := h.repo.DeleteRoundMaster(r.Context(), id, currentMaster.PlaceID)
+	if err != nil {
+		if errors.Is(err, ErrPatrolRoundMasterNotFound) {
+			web.WriteError(w, http.StatusNotFound, "Patrol round master not found")
+			return
+		}
+		web.WriteError(w, http.StatusInternalServerError, "Failed to delete patrol round master")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, map[string]string{"id": out})
+}
+
+func (h *Handler) ListRoundStatuses(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	placeID := strings.TrimSpace(r.URL.Query().Get("placeId"))
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	shiftID := strings.TrimSpace(r.URL.Query().Get("shiftId"))
+	date := strings.TrimSpace(r.URL.Query().Get("date"))
+	fromDate := strings.TrimSpace(r.URL.Query().Get("fromDate"))
+	toDate := strings.TrimSpace(r.URL.Query().Get("toDate"))
+	if !web.IsUUID(placeID) || !web.IsUUID(userID) {
+		web.WriteError(w, http.StatusBadRequest, "placeId and userId are required")
+		return
+	}
+	if shiftID != "" && !web.IsUUID(shiftID) {
+		web.WriteError(w, http.StatusBadRequest, "shiftId must be valid UUID")
+		return
+	}
+	if date != "" && !isDateOnly(date) {
+		web.WriteError(w, http.StatusBadRequest, "date must use YYYY-MM-DD")
+		return
+	}
+	if fromDate != "" && !isDateOnly(fromDate) {
+		web.WriteError(w, http.StatusBadRequest, "fromDate must use YYYY-MM-DD")
+		return
+	}
+	if toDate != "" && !isDateOnly(toDate) {
+		web.WriteError(w, http.StatusBadRequest, "toDate must use YYYY-MM-DD")
+		return
+	}
+	if shiftID != "" && date == "" {
+		web.WriteError(w, http.StatusBadRequest, "date is required when shiftId is provided")
+		return
+	}
+	result, err := h.repo.ListRoundStatuses(r.Context(), current.UserID, current.Role, placeID, userID, shiftID, date, fromDate, toDate)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol round statuses")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -164,9 +355,11 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	attendanceID := strings.TrimSpace(r.URL.Query().Get("attendanceId"))
 	shiftID := strings.TrimSpace(r.URL.Query().Get("shiftId"))
+	runNoRaw := strings.TrimSpace(r.URL.Query().Get("runNo"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	fromDate := strings.TrimSpace(r.URL.Query().Get("fromDate"))
 	toDate := strings.TrimSpace(r.URL.Query().Get("toDate"))
+	var runNo *int
 	if attendanceID != "" && !web.IsUUID(attendanceID) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
@@ -174,6 +367,14 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	if shiftID != "" && !web.IsUUID(shiftID) {
 		web.WriteError(w, http.StatusBadRequest, "shiftId must be valid UUID")
 		return
+	}
+	if runNoRaw != "" {
+		value, err := strconv.Atoi(runNoRaw)
+		if err != nil || value < 1 {
+			web.WriteError(w, http.StatusBadRequest, "runNo must be integer >= 1")
+			return
+		}
+		runNo = &value
 	}
 	if fromDate != "" && !isDateOnly(fromDate) {
 		web.WriteError(w, http.StatusBadRequest, "fromDate must use YYYY-MM-DD")
@@ -187,7 +388,7 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "fromDate cannot be greater than toDate")
 		return
 	}
-	result, err := h.repo.ListRuns(r.Context(), current.UserID, current.Role, placeID, userID, attendanceID, shiftID, status, fromDate, toDate, query)
+	result, err := h.repo.ListRuns(r.Context(), current.UserID, current.Role, placeID, userID, attendanceID, shiftID, runNo, status, fromDate, toDate, query)
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol runs")
 		return
@@ -256,6 +457,10 @@ func (h *Handler) CreateRun(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrAlreadyExists):
 			web.WriteError(w, http.StatusConflict, "Patrol run already exists")
+		case errors.Is(err, ErrPatrolRoundMasterRequired):
+			web.WriteError(w, http.StatusBadRequest, "runNo is required because master ronde already exists for this place")
+		case errors.Is(err, ErrPatrolRoundMasterNotFound):
+			web.WriteError(w, http.StatusBadRequest, "runNo not found in master ronde for this place")
 		case errors.Is(err, ErrForeignKey):
 			web.WriteError(w, http.StatusBadRequest, "Related place/user/attendance not found")
 		case strings.Contains(strings.ToLower(err.Error()), "status"):
@@ -332,6 +537,8 @@ func (h *Handler) PatchRun(w http.ResponseWriter, r *http.Request) {
 			web.WriteError(w, http.StatusNotFound, "Patrol run not found")
 		case errors.Is(err, ErrAlreadyExists):
 			web.WriteError(w, http.StatusConflict, "Patrol run already exists")
+		case errors.Is(err, ErrPatrolRoundMasterNotFound):
+			web.WriteError(w, http.StatusBadRequest, "runNo not found in master ronde for this place")
 		case strings.Contains(strings.ToLower(err.Error()), "status"):
 			web.WriteError(w, http.StatusBadRequest, "Invalid patrol run status")
 		default:
@@ -438,6 +645,7 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		PlaceID      string  `json:"placeId"`
 		UserID       string  `json:"userId"`
 		SpotID       string  `json:"spotId"`
+		PatrolRunID  string  `json:"patrolRunId"`
 		AttendanceID *string `json:"attendanceId"`
 		ScannedAt    *string `json:"scannedAt"`
 		SubmitAt     *string `json:"submitAt"`
@@ -448,8 +656,8 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid body")
 		return
 	}
-	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) {
-		web.WriteError(w, http.StatusBadRequest, "placeId, userId, and spotId are required")
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || !web.IsUUID(strings.TrimSpace(body.PatrolRunID)) {
+		web.WriteError(w, http.StatusBadRequest, "placeId, userId, spotId, and patrolRunId are required")
 		return
 	}
 	attendanceID := trimStringPtr(body.AttendanceID)
@@ -457,11 +665,15 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
 	}
-	result, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), attendanceID, trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
+	result, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), strings.TrimSpace(body.PatrolRunID), attendanceID, trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyExists):
 			web.WriteError(w, http.StatusConflict, "Patrol scan already exists")
+		case errors.Is(err, ErrPatrolRunNotFound):
+			web.WriteError(w, http.StatusBadRequest, "Patrol run not found for selected place/user")
+		case errors.Is(err, ErrPatrolRunClosed):
+			web.WriteError(w, http.StatusConflict, "Patrol run already completed")
 		case errors.Is(err, ErrForeignKey):
 			web.WriteError(w, http.StatusBadRequest, "Related place/user/spot not found")
 		default:

@@ -18,12 +18,15 @@ import (
 )
 
 var (
-	ErrRoutePointNotFound = errors.New("route point not found")
-	ErrPatrolRunNotFound  = errors.New("patrol run not found")
-	ErrPatrolScanNotFound = errors.New("patrol scan not found")
-	ErrProgressNotFound   = errors.New("patrol progress not found")
-	ErrAlreadyExists      = errors.New("already exists")
-	ErrForeignKey         = errors.New("related row not found")
+	ErrRoutePointNotFound       = errors.New("route point not found")
+	ErrPatrolRoundMasterNotFound = errors.New("patrol round master not found")
+	ErrPatrolRoundMasterRequired = errors.New("patrol round master required")
+	ErrPatrolRunNotFound        = errors.New("patrol run not found")
+	ErrPatrolRunClosed          = errors.New("patrol run closed")
+	ErrPatrolScanNotFound       = errors.New("patrol scan not found")
+	ErrProgressNotFound         = errors.New("patrol progress not found")
+	ErrAlreadyExists            = errors.New("already exists")
+	ErrForeignKey               = errors.New("related row not found")
 )
 
 type Repository struct{ db *pgxpool.Pool }
@@ -36,6 +39,28 @@ type PatrolRoutePoint struct {
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type PatrolRoundMaster struct {
+	ID        string    `json:"id"`
+	PlaceID   string    `json:"place_id"`
+	RoundNo   int       `json:"round_no"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type PatrolRoundStatus struct {
+	RoundMasterID    string `json:"round_master_id"`
+	PlaceID          string `json:"place_id"`
+	UserID           string `json:"user_id"`
+	ShiftID          string `json:"shift_id,omitempty"`
+	PeriodDate       string `json:"period_date,omitempty"`
+	RoundNo          int    `json:"round_no"`
+	TotalActiveSpots int    `json:"total_active_spots"`
+	ScannedSpots     int    `json:"scanned_spots"`
+	ScanCount        int    `json:"scan_count"`
+	Status           string `json:"status"`
 }
 
 type PatrolScan struct {
@@ -172,7 +197,268 @@ func (r *Repository) DeleteRoutePoint(ctx context.Context, id, placeID string) (
 	return out, nil
 }
 
-func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, placeID, userID, attendanceID, shiftID, status, fromDate, toDate string, query listquery.Query) (listquery.Response[PatrolRun], error) {
+func (r *Repository) ListRoundMasters(ctx context.Context, actorUserID, actorRole, placeID string, query listquery.Query) (listquery.Response[PatrolRoundMaster], error) {
+	sortColumn := map[string]string{"roundNo": "round_no", "isActive": "is_active", "createdAt": "created_at", "updatedAt": "updated_at"}[query.SortBy]
+	if sortColumn == "" {
+		sortColumn = "round_no"
+	}
+	sortDirection := "asc"
+	if query.SortOrder == listquery.SortDesc {
+		sortDirection = "desc"
+	}
+	sql := `select id, place_id, round_no, is_active, created_at, updated_at, count(*) over()::int as total_count from patrol_round_masters where place_id = $1`
+	args := []any{placeID}
+	if !auth.IsGlobalAdminRole(actorRole) {
+		args = append(args, actorUserID)
+		sql += fmt.Sprintf(` and place_id in (
+			select distinct upr.place_id
+			from user_place_roles upr join places p on p.id = upr.place_id
+			where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null
+		)`, len(args))
+	}
+	args = append(args, query.PageSize, query.Offset)
+	sql += fmt.Sprintf(" order by %s %s, id asc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return listquery.Response[PatrolRoundMaster]{}, err
+	}
+	defer rows.Close()
+	data := make([]PatrolRoundMaster, 0)
+	total := 0
+	for rows.Next() {
+		var item PatrolRoundMaster
+		if err := rows.Scan(&item.ID, &item.PlaceID, &item.RoundNo, &item.IsActive, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
+			return listquery.Response[PatrolRoundMaster]{}, err
+		}
+		data = append(data, item)
+	}
+	return listquery.BuildResponse(data, query, total), rows.Err()
+}
+
+func (r *Repository) CreateRoundMaster(ctx context.Context, placeID string, roundNo int, isActive bool) (*PatrolRoundMaster, error) {
+	const sql = `
+		insert into patrol_round_masters (id, place_id, round_no, is_active)
+		values ($1,$2,$3,$4)
+		returning id, place_id, round_no, is_active, created_at, updated_at
+	`
+	id := newPatrolRunID()
+	var item PatrolRoundMaster
+	err := r.db.QueryRow(ctx, sql, id, placeID, roundNo, isActive).Scan(
+		&item.ID,
+		&item.PlaceID,
+		&item.RoundNo,
+		&item.IsActive,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		switch {
+		case isPgCode(err, "23505"):
+			return nil, ErrAlreadyExists
+		case isPgCode(err, "23503"):
+			return nil, ErrForeignKey
+		default:
+			return nil, err
+		}
+	}
+	return &item, nil
+}
+
+func (r *Repository) GetRoundMaster(ctx context.Context, id string) (*PatrolRoundMaster, error) {
+	const sql = `
+		select id, place_id, round_no, is_active, created_at, updated_at
+		from patrol_round_masters
+		where id = $1
+	`
+	var item PatrolRoundMaster
+	if err := r.db.QueryRow(ctx, sql, id).Scan(
+		&item.ID,
+		&item.PlaceID,
+		&item.RoundNo,
+		&item.IsActive,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPatrolRoundMasterNotFound
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *Repository) UpdateRoundMaster(ctx context.Context, id string, roundNo *int, isActive *bool) (*PatrolRoundMaster, error) {
+	setParts := make([]string, 0)
+	args := make([]any, 0)
+	argPos := 1
+	if roundNo != nil {
+		setParts = append(setParts, fmt.Sprintf("round_no = $%d", argPos))
+		args = append(args, *roundNo)
+		argPos++
+	}
+	if isActive != nil {
+		setParts = append(setParts, fmt.Sprintf("is_active = $%d", argPos))
+		args = append(args, *isActive)
+		argPos++
+	}
+	if len(setParts) == 0 {
+		return nil, ErrPatrolRoundMasterNotFound
+	}
+	args = append(args, id)
+	sql := fmt.Sprintf(`
+		update patrol_round_masters
+		set %s,
+		    updated_at = now()
+		where id = $%d
+		returning id, place_id, round_no, is_active, created_at, updated_at
+	`, strings.Join(setParts, ", "), argPos)
+	var item PatrolRoundMaster
+	if err := r.db.QueryRow(ctx, sql, args...).Scan(
+		&item.ID,
+		&item.PlaceID,
+		&item.RoundNo,
+		&item.IsActive,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, ErrPatrolRoundMasterNotFound
+		case isPgCode(err, "23505"):
+			return nil, ErrAlreadyExists
+		default:
+			return nil, err
+		}
+	}
+	return &item, nil
+}
+
+func (r *Repository) DeleteRoundMaster(ctx context.Context, id, placeID string) (string, error) {
+	const sql = `delete from patrol_round_masters where id = $1 and place_id = $2 returning id`
+	var out string
+	if err := r.db.QueryRow(ctx, sql, id, placeID).Scan(&out); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrPatrolRoundMasterNotFound
+		}
+		return "", err
+	}
+	return out, nil
+}
+
+func (r *Repository) ListRoundStatuses(ctx context.Context, actorUserID, actorRole, placeID, userID, shiftID, date, fromDate, toDate string) ([]PatrolRoundStatus, error) {
+	if !auth.IsGlobalAdminRole(actorRole) {
+		var hasAccess bool
+		if err := r.db.QueryRow(
+			ctx,
+			`select exists(
+				select 1
+				from user_place_roles upr
+				join places p on p.id = upr.place_id
+				where upr.user_id = $1
+				  and upr.place_id = $2
+				  and upr.is_active = true
+				  and p.deleted_at is null
+			)`,
+			actorUserID,
+			placeID,
+		).Scan(&hasAccess); err != nil {
+			return nil, err
+		}
+		if !hasAccess {
+			return []PatrolRoundStatus{}, nil
+		}
+	}
+
+	totalActiveSpots, err := r.countActiveRouteSpotsDirect(ctx, placeID)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []any{placeID, userID}
+	periodFilter := ""
+
+	if fromDate != "" {
+		args = append(args, fromDate)
+		periodFilter += fmt.Sprintf(" and (ps.scanned_at at time zone 'Asia/Jakarta')::date >= $%d::date", len(args))
+	}
+	if toDate != "" {
+		args = append(args, toDate)
+		periodFilter += fmt.Sprintf(" and (ps.scanned_at at time zone 'Asia/Jakarta')::date <= $%d::date", len(args))
+	}
+	if date != "" {
+		args = append(args, date)
+		periodFilter += fmt.Sprintf(" and (ps.scanned_at at time zone 'Asia/Jakarta')::date = $%d::date", len(args))
+	}
+	if shiftID != "" && date != "" {
+		startAt, endAt, err := r.resolveShiftWindow(ctx, shiftID, date)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, startAt, endAt)
+		periodFilter += fmt.Sprintf(" and ps.scanned_at >= $%d and ps.scanned_at < $%d", len(args)-1, len(args))
+	}
+
+	sql := fmt.Sprintf(`
+		select
+			prm.id,
+			prm.place_id,
+			prm.round_no,
+			count(distinct case when prp.is_active then ps.spot_id end)::int as scanned_spots,
+			count(ps.id)::int as scan_count
+		from patrol_round_masters prm
+		left join patrol_runs pr
+		  on pr.place_id = prm.place_id
+		 and pr.user_id = $2
+		 and pr.run_no = prm.round_no
+		left join patrol_scans ps
+		  on ps.patrol_run_id = pr.id
+		left join patrol_route_points prp
+		  on prp.place_id = prm.place_id
+		 and prp.spot_id = ps.spot_id
+		 and prp.is_active = true
+		where prm.place_id = $1
+		  and prm.is_active = true
+		  %s
+		group by prm.id, prm.place_id, prm.round_no
+		order by prm.round_no asc, prm.id asc
+	`, periodFilter)
+
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]PatrolRoundStatus, 0)
+	for rows.Next() {
+		var item PatrolRoundStatus
+		item.UserID = userID
+		item.ShiftID = shiftID
+		item.PeriodDate = date
+		item.TotalActiveSpots = totalActiveSpots
+		if err := rows.Scan(
+			&item.RoundMasterID,
+			&item.PlaceID,
+			&item.RoundNo,
+			&item.ScannedSpots,
+			&item.ScanCount,
+		); err != nil {
+			return nil, err
+		}
+		switch {
+		case item.ScannedSpots <= 0:
+			item.Status = "empty"
+		case totalActiveSpots > 0 && item.ScannedSpots >= totalActiveSpots:
+			item.Status = "full"
+		default:
+			item.Status = "partial"
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, placeID, userID, attendanceID, shiftID string, runNo *int, status, fromDate, toDate string, query listquery.Query) (listquery.Response[PatrolRun], error) {
 	sortColumn := map[string]string{
 		"runNo":            "pr.run_no",
 		"status":           "pr.status",
@@ -233,6 +519,10 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 	if shiftID != "" {
 		args = append(args, shiftID)
 		sql += fmt.Sprintf(" and a.shift_id = $%d", len(args))
+	}
+	if runNo != nil {
+		args = append(args, *runNo)
+		sql += fmt.Sprintf(" and pr.run_no = $%d", len(args))
 	}
 	if status != "" {
 		args = append(args, status)
@@ -414,7 +704,17 @@ func (r *Repository) CreateRun(ctx context.Context, placeID, userID string, atte
 	resolvedRunNo := 0
 	if runNo != nil && *runNo > 0 {
 		resolvedRunNo = *runNo
+		if err := r.ensureRoundNoAllowed(ctx, tx, placeID, resolvedRunNo); err != nil {
+			return nil, err
+		}
 	} else {
+		hasMasters, err := r.hasRoundMasters(ctx, tx, placeID)
+		if err != nil {
+			return nil, err
+		}
+		if hasMasters {
+			return nil, ErrPatrolRoundMasterRequired
+		}
 		resolvedRunNo, err = r.nextRunNo(ctx, tx, placeID, userID, attendanceID)
 		if err != nil {
 			return nil, err
@@ -462,6 +762,24 @@ func (r *Repository) CreateRun(ctx context.Context, placeID, userID string, atte
 }
 
 func (r *Repository) UpdateRun(ctx context.Context, id string, runNo, totalActiveSpots *int, status *string) (*PatrolRun, error) {
+	if runNo != nil {
+		runPlaceID, err := r.getRunPlaceID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback(ctx)
+		if err := r.ensureRoundNoAllowed(ctx, tx, runPlaceID, *runNo); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	setParts := make([]string, 0)
 	args := make([]any, 0)
 	argPos := 1
@@ -781,9 +1099,13 @@ func (r *Repository) DeleteScan(ctx context.Context, scanID string) (string, err
 	return scanID, nil
 }
 
-func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID string, attendanceID *string, scannedAt, submitAt, photoURL, note *string) (*CreateScanResult, error) {
+func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, patrolRunID string, attendanceID *string, scannedAt, submitAt, photoURL, note *string) (*CreateScanResult, error) {
 	// Patrol scans are stored independently from attendance.
 	attendanceID = nil
+	patrolRunID = strings.TrimSpace(patrolRunID)
+	if patrolRunID == "" {
+		return nil, ErrPatrolRunNotFound
+	}
 
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -791,19 +1113,14 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID str
 	}
 	defer tx.Rollback(ctx)
 
-	totalActiveSpots, err := r.countActiveRouteSpots(ctx, tx, placeID)
-	if err != nil {
-		return nil, err
-	}
-
-	runID, runNo, isNewRun, err := r.ensureActiveRun(ctx, tx, placeID, userID, totalActiveSpots, scannedAt)
+	runNo, totalActiveSpots, err := r.validateManualRun(ctx, tx, patrolRunID, placeID, userID)
 	if err != nil {
 		return nil, err
 	}
 
 	const sql = `insert into patrol_scans (place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,$5,coalesce($6::timestamptz, now()),coalesce($7::timestamptz, now()),$8,$9) returning id`
 	var id string
-	err = tx.QueryRow(ctx, sql, placeID, userID, spotID, attendanceID, runID, scannedAt, submitAt, photoURL, note).Scan(&id)
+	err = tx.QueryRow(ctx, sql, placeID, userID, spotID, attendanceID, patrolRunID, scannedAt, submitAt, photoURL, note).Scan(&id)
 	if err != nil {
 		switch {
 		case isPgCode(err, "23505"):
@@ -815,7 +1132,7 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID str
 		}
 	}
 
-	runCompleted, err := r.syncRunCompletion(ctx, tx, runID, totalActiveSpots, submitAt, scannedAt)
+	runCompleted, err := r.syncRunCompletion(ctx, tx, patrolRunID, totalActiveSpots, submitAt, scannedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -826,11 +1143,34 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID str
 
 	return &CreateScanResult{
 		ID:                 id,
-		PatrolRunID:        runID,
+		PatrolRunID:        patrolRunID,
 		PatrolRunNo:        runNo,
-		IsNewPatrolRun:     isNewRun,
+		IsNewPatrolRun:     false,
 		PatrolRunCompleted: runCompleted,
 	}, nil
+}
+
+func (r *Repository) validateManualRun(ctx context.Context, tx pgx.Tx, patrolRunID, placeID, userID string) (int, int, error) {
+	const sql = `
+		select run_no, total_active_spots, status
+		from patrol_runs
+		where id = $1
+		  and place_id = $2
+		  and user_id = $3
+		for update
+	`
+	var runNo, totalActiveSpots int
+	var status string
+	if err := tx.QueryRow(ctx, sql, patrolRunID, placeID, userID).Scan(&runNo, &totalActiveSpots, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, ErrPatrolRunNotFound
+		}
+		return 0, 0, err
+	}
+	if strings.EqualFold(strings.TrimSpace(status), "completed") {
+		return 0, 0, ErrPatrolRunClosed
+	}
+	return runNo, totalActiveSpots, nil
 }
 
 func (r *Repository) syncRunState(ctx context.Context, tx pgx.Tx, runID string) error {
@@ -868,6 +1208,18 @@ func (r *Repository) countActiveRouteSpots(ctx context.Context, tx pgx.Tx, place
 	`
 	var total int
 	err := tx.QueryRow(ctx, sql, placeID).Scan(&total)
+	return total, err
+}
+
+func (r *Repository) countActiveRouteSpotsDirect(ctx context.Context, placeID string) (int, error) {
+	const sql = `
+		select count(*)::int
+		from patrol_route_points
+		where place_id = $1
+		  and is_active = true
+	`
+	var total int
+	err := r.db.QueryRow(ctx, sql, placeID).Scan(&total)
 	return total, err
 }
 
@@ -938,6 +1290,93 @@ func (r *Repository) nextRunNo(ctx context.Context, tx pgx.Tx, placeID, userID s
 	var runNo int
 	err := tx.QueryRow(ctx, sql, placeID, userID).Scan(&runNo)
 	return runNo, err
+}
+
+func (r *Repository) hasRoundMasters(ctx context.Context, tx pgx.Tx, placeID string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(
+		ctx,
+		`select exists(select 1 from patrol_round_masters where place_id = $1 and is_active = true)`,
+		placeID,
+	).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (r *Repository) resolveShiftWindow(ctx context.Context, shiftID, date string) (time.Time, time.Time, error) {
+	var startRaw, endRaw string
+	if err := r.db.QueryRow(
+		ctx,
+		`select start_time::text, end_time::text from shifts where id = $1 and is_active = true`,
+		shiftID,
+	).Scan(&startRaw, &endRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, time.Time{}, ErrForeignKey
+		}
+		return time.Time{}, time.Time{}, err
+	}
+
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	parseClock := func(raw string) (int, int, int, error) {
+		layouts := []string{"15:04:05", "15:04"}
+		for _, layout := range layouts {
+			if t, err := time.ParseInLocation(layout, strings.TrimSpace(raw), loc); err == nil {
+				return t.Hour(), t.Minute(), t.Second(), nil
+			}
+		}
+		return 0, 0, 0, fmt.Errorf("invalid shift time")
+	}
+
+	startH, startM, startS, err := parseClock(startRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	endH, endM, endS, err := parseClock(endRaw)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+
+	baseDate, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	startAt := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(), startH, startM, startS, 0, loc)
+	endAt := time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(), endH, endM, endS, 0, loc)
+	if !endAt.After(startAt) {
+		endAt = endAt.Add(24 * time.Hour)
+	}
+	return startAt.UTC(), endAt.UTC(), nil
+}
+
+func (r *Repository) ensureRoundNoAllowed(ctx context.Context, tx pgx.Tx, placeID string, roundNo int) error {
+	var exists bool
+	if err := tx.QueryRow(
+		ctx,
+		`select exists(select 1 from patrol_round_masters where place_id = $1 and round_no = $2 and is_active = true)`,
+		placeID,
+		roundNo,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrPatrolRoundMasterNotFound
+	}
+	return nil
+}
+
+func (r *Repository) getRunPlaceID(ctx context.Context, id string) (string, error) {
+	var placeID string
+	if err := r.db.QueryRow(ctx, `select place_id from patrol_runs where id = $1`, id).Scan(&placeID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrPatrolRunNotFound
+		}
+		return "", err
+	}
+	return placeID, nil
 }
 
 func (r *Repository) isRunComplete(ctx context.Context, tx pgx.Tx, runID string, totalActiveSpots int) (bool, error) {
