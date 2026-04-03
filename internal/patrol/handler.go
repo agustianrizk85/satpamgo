@@ -656,8 +656,12 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "Invalid body")
 		return
 	}
-	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || !web.IsUUID(strings.TrimSpace(body.PatrolRunID)) {
-		web.WriteError(w, http.StatusBadRequest, "placeId, userId, spotId, and patrolRunId are required")
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) {
+		web.WriteError(w, http.StatusBadRequest, "placeId, userId, and spotId are required")
+		return
+	}
+	if strings.TrimSpace(body.PatrolRunID) != "" && !web.IsUUID(strings.TrimSpace(body.PatrolRunID)) {
+		web.WriteError(w, http.StatusBadRequest, "patrolRunId must be valid UUID")
 		return
 	}
 	attendanceID := trimStringPtr(body.AttendanceID)

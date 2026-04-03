@@ -92,6 +92,13 @@ type PatrolRun struct {
 	UniqueScannedSpots int        `json:"unique_scanned_spots"`
 }
 
+type patrolShiftScope struct {
+	ShiftID    string
+	PeriodDate string
+	WindowStart time.Time
+	WindowEnd   time.Time
+}
+
 type CreateScanResult struct {
 	ID                 string
 	PatrolRunID        string
@@ -399,26 +406,37 @@ func (r *Repository) ListRoundStatuses(ctx context.Context, actorUserID, actorRo
 	}
 
 	sql := fmt.Sprintf(`
+		with master_scans as (
+			select
+				ps.id,
+				ps.spot_id,
+				row_number() over (
+					partition by ps.spot_id
+					order by coalesce(ps.submit_at, ps.scanned_at) asc, ps.id asc
+				)::int as occurrence_no
+			from patrol_scans ps
+			join patrol_runs pr
+			  on pr.id = ps.patrol_run_id
+			where pr.place_id = $1
+			  and pr.user_id = $2
+			  and pr.run_no = 0
+			  %s
+		)
 		select
 			prm.id,
 			prm.place_id,
 			prm.round_no,
-			count(distinct case when prp.is_active then ps.spot_id end)::int as scanned_spots,
-			count(ps.id)::int as scan_count
+			count(distinct case when prp.is_active then ms.spot_id end)::int as scanned_spots,
+			count(ms.id)::int as scan_count
 		from patrol_round_masters prm
-		left join patrol_runs pr
-		  on pr.place_id = prm.place_id
-		 and pr.user_id = $2
-		 and pr.run_no = prm.round_no
-		left join patrol_scans ps
-		  on ps.patrol_run_id = pr.id
+		left join master_scans ms
+		  on ms.occurrence_no = prm.round_no
 		left join patrol_route_points prp
 		  on prp.place_id = prm.place_id
-		 and prp.spot_id = ps.spot_id
+		 and prp.spot_id = ms.spot_id
 		 and prp.is_active = true
 		where prm.place_id = $1
 		  and prm.is_active = true
-		  %s
 		group by prm.id, prm.place_id, prm.round_no
 		order by prm.round_no asc, prm.id asc
 	`, periodFilter)
@@ -1103,9 +1121,6 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, pa
 	// Patrol scans are stored independently from attendance.
 	attendanceID = nil
 	patrolRunID = strings.TrimSpace(patrolRunID)
-	if patrolRunID == "" {
-		return nil, ErrPatrolRunNotFound
-	}
 
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -1113,9 +1128,40 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, pa
 	}
 	defer tx.Rollback(ctx)
 
-	runNo, totalActiveSpots, err := r.validateManualRun(ctx, tx, patrolRunID, placeID, userID)
+	runNo := 0
+	totalActiveSpots := 0
+	isNewPatrolRun := false
+	hasMasters, err := r.hasRoundMasters(ctx, tx, placeID)
 	if err != nil {
 		return nil, err
+	}
+	if hasMasters {
+		totalActiveSpots, err = r.countActiveRouteSpots(ctx, tx, placeID)
+		if err != nil {
+			return nil, err
+		}
+		patrolRunID, isNewPatrolRun, err = r.getOrCreateMasterRun(ctx, tx, placeID, userID, startedAtOrSubmit(scannedAt, submitAt))
+		if err != nil {
+			return nil, err
+		}
+		runNo, err = r.resolveProjectedRoundNoForSpot(ctx, tx, placeID, patrolRunID, spotID)
+		if err != nil {
+			return nil, err
+		}
+	} else if patrolRunID != "" {
+		runNo, totalActiveSpots, err = r.validateManualRun(ctx, tx, patrolRunID, placeID, userID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		totalActiveSpots, err = r.countActiveRouteSpots(ctx, tx, placeID)
+		if err != nil {
+			return nil, err
+		}
+		patrolRunID, runNo, isNewPatrolRun, err = r.resolveAutomaticRunForSpot(ctx, tx, placeID, userID, spotID, totalActiveSpots, scannedAt)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	const sql = `insert into patrol_scans (place_id, user_id, spot_id, attendance_id, patrol_run_id, scanned_at, submit_at, photo_url, note) values ($1,$2,$3,$4,$5,coalesce($6::timestamptz, now()),coalesce($7::timestamptz, now()),$8,$9) returning id`
@@ -1132,9 +1178,15 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, pa
 		}
 	}
 
-	runCompleted, err := r.syncRunCompletion(ctx, tx, patrolRunID, totalActiveSpots, submitAt, scannedAt)
-	if err != nil {
-		return nil, err
+	runCompleted := false
+	if !hasMasters || runNo == 0 {
+		if err := r.syncRunState(ctx, tx, patrolRunID); err != nil {
+			return nil, err
+		}
+		runCompleted, err = r.isRunMarkedCompleted(ctx, tx, patrolRunID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -1145,9 +1197,53 @@ func (r *Repository) CreateScan(ctx context.Context, placeID, userID, spotID, pa
 		ID:                 id,
 		PatrolRunID:        patrolRunID,
 		PatrolRunNo:        runNo,
-		IsNewPatrolRun:     false,
+		IsNewPatrolRun:     isNewPatrolRun,
 		PatrolRunCompleted: runCompleted,
 	}, nil
+}
+
+func startedAtOrSubmit(scannedAt, submitAt *string) *string {
+	if submitAt != nil && strings.TrimSpace(*submitAt) != "" {
+		return submitAt
+	}
+	if scannedAt != nil && strings.TrimSpace(*scannedAt) != "" {
+		return scannedAt
+	}
+	return nil
+}
+
+func (r *Repository) resolveAutomaticRunForSpot(ctx context.Context, tx pgx.Tx, placeID, userID, spotID string, totalActiveSpots int, startedAt *string) (string, int, bool, error) {
+	roundNos, err := r.listActiveRoundNos(ctx, tx, placeID)
+	if err != nil {
+		return "", 0, false, err
+	}
+	if len(roundNos) == 0 {
+		runID, runNo, isNew, err := r.ensureActiveRun(ctx, tx, placeID, userID, totalActiveSpots, startedAt)
+		return runID, runNo, isNew, err
+	}
+
+	for _, roundNo := range roundNos {
+		runID, found, createdNow, err := r.getOrCreateRunByNo(ctx, tx, placeID, userID, roundNo, totalActiveSpots, startedAt)
+		if err != nil {
+			return "", 0, false, err
+		}
+		if !found || createdNow {
+			return runID, roundNo, true, nil
+		}
+		spotExists, err := r.runAlreadyHasSpot(ctx, tx, runID, spotID)
+		if err != nil {
+			return "", 0, false, err
+		}
+		if !spotExists {
+			return runID, roundNo, false, nil
+		}
+	}
+
+	runID, _, createdNow, err := r.getOrCreateRunByNo(ctx, tx, placeID, userID, 0, 0, startedAt)
+	if err != nil {
+		return "", 0, false, err
+	}
+	return runID, 0, createdNow, nil
 }
 
 func (r *Repository) validateManualRun(ctx context.Context, tx pgx.Tx, patrolRunID, placeID, userID string) (int, int, error) {
@@ -1171,6 +1267,189 @@ func (r *Repository) validateManualRun(ctx context.Context, tx pgx.Tx, patrolRun
 		return 0, 0, ErrPatrolRunClosed
 	}
 	return runNo, totalActiveSpots, nil
+}
+
+func (r *Repository) isRunMarkedCompleted(ctx context.Context, tx pgx.Tx, runID string) (bool, error) {
+	var status string
+	if err := tx.QueryRow(ctx, `select status from patrol_runs where id = $1`, runID).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrPatrolRunNotFound
+		}
+		return false, err
+	}
+	return strings.EqualFold(strings.TrimSpace(status), "completed"), nil
+}
+
+func (r *Repository) getOrCreateMasterRun(ctx context.Context, tx pgx.Tx, placeID, userID string, startedAt *string) (string, bool, error) {
+	scope, err := r.resolveShiftScopeForScan(ctx, placeID, startedAt)
+	if err != nil {
+		return "", false, err
+	}
+	if scope != nil {
+		runID, found, createdNow, err := r.getOrCreateMasterRunForScope(ctx, tx, placeID, userID, scope)
+		if err != nil {
+			return "", false, err
+		}
+		if found {
+			return runID, false, nil
+		}
+		return runID, createdNow, nil
+	}
+	runID, found, createdNow, err := r.getOrCreateRunByNo(ctx, tx, placeID, userID, 0, 0, startedAt)
+	if err != nil {
+		return "", false, err
+	}
+	if found {
+		return runID, false, nil
+	}
+	return runID, createdNow, nil
+}
+
+func (r *Repository) resolveProjectedRoundNoForSpot(ctx context.Context, tx pgx.Tx, placeID, masterRunID, spotID string) (int, error) {
+	roundNos, err := r.listActiveRoundNos(ctx, tx, placeID)
+	if err != nil {
+		return 0, err
+	}
+	if len(roundNos) == 0 {
+		return 0, nil
+	}
+
+	var currentCount int
+	if err := tx.QueryRow(ctx, `
+		select count(*)::int
+		from patrol_scans
+		where patrol_run_id = $1
+		  and spot_id = $2
+	`, masterRunID, spotID).Scan(&currentCount); err != nil {
+		return 0, err
+	}
+	nextOrdinal := currentCount + 1
+	if nextOrdinal > len(roundNos) {
+		return 0, nil
+	}
+	return roundNos[nextOrdinal-1], nil
+}
+
+func (r *Repository) getOrCreateMasterRunForScope(ctx context.Context, tx pgx.Tx, placeID, userID string, scope *patrolShiftScope) (string, bool, bool, error) {
+	const selectSQL = `
+		select id
+		from patrol_runs
+		where place_id = $1
+		  and user_id = $2
+		  and run_no = 0
+		  and started_at >= $3
+		  and started_at < $4
+		order by created_at desc, id desc
+		limit 1
+		for update
+	`
+	var runID string
+	err := tx.QueryRow(ctx, selectSQL, placeID, userID, scope.WindowStart, scope.WindowEnd).Scan(&runID)
+	if err == nil {
+		return runID, true, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, err
+	}
+
+	runID = newPatrolRunID()
+	const insertSQL = `
+		insert into patrol_runs (id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at)
+		values ($1,$2,$3,$4,$5,$6,'active',$7)
+	`
+	if _, err := tx.Exec(ctx, insertSQL, runID, placeID, userID, nil, 0, 0, scope.WindowStart); err != nil {
+		return "", false, false, err
+	}
+	return runID, false, true, nil
+}
+
+func (r *Repository) resolveShiftScopeForScan(ctx context.Context, placeID string, referenceAt *string) (*patrolShiftScope, error) {
+	loc, err := time.LoadLocation("Asia/Jakarta")
+	if err != nil {
+		return nil, err
+	}
+	refTime := time.Now().In(loc)
+	if referenceAt != nil && strings.TrimSpace(*referenceAt) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*referenceAt))
+		if err != nil {
+			return nil, err
+		}
+		refTime = parsed.In(loc)
+	}
+
+	const sql = `
+		with ref as (
+			select (($2::timestamptz at time zone 'Asia/Jakarta')::time) as local_time
+		)
+		select s.id, s.start_time::text, s.end_time::text
+		from shifts s
+		cross join ref
+		where s.place_id = $1
+		  and s.is_active = true
+		order by
+			case
+				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then 0
+				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then 0
+				when ref.local_time >= s.start_time then 1
+				else 2
+			end asc,
+			case
+				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then (ref.local_time - s.start_time)
+				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then
+					case
+						when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
+						else (interval '24 hours' - (s.start_time - ref.local_time))
+					end
+				when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
+				else (s.start_time - ref.local_time)
+			end asc,
+			s.start_time asc,
+			s.id asc
+		limit 1
+	`
+	var shiftID, startRaw, endRaw string
+	if err := r.db.QueryRow(ctx, sql, placeID, refTime.Format(time.RFC3339)).Scan(&shiftID, &startRaw, &endRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	parseClock := func(raw string) (int, int, int, error) {
+		layouts := []string{"15:04:05", "15:04"}
+		for _, layout := range layouts {
+			if t, err := time.ParseInLocation(layout, strings.TrimSpace(raw), loc); err == nil {
+				return t.Hour(), t.Minute(), t.Second(), nil
+			}
+		}
+		return 0, 0, 0, fmt.Errorf("invalid shift time")
+	}
+	startH, startM, startS, err := parseClock(startRaw)
+	if err != nil {
+		return nil, err
+	}
+	endH, endM, endS, err := parseClock(endRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	periodDate := time.Date(refTime.Year(), refTime.Month(), refTime.Day(), 0, 0, 0, 0, loc)
+	windowStart := time.Date(periodDate.Year(), periodDate.Month(), periodDate.Day(), startH, startM, startS, 0, loc)
+	windowEnd := time.Date(periodDate.Year(), periodDate.Month(), periodDate.Day(), endH, endM, endS, 0, loc)
+	if !windowEnd.After(windowStart) {
+		if refTime.Hour() < endH || (refTime.Hour() == endH && (refTime.Minute() < endM || (refTime.Minute() == endM && refTime.Second() < endS))) {
+			periodDate = periodDate.AddDate(0, 0, -1)
+		}
+		windowStart = time.Date(periodDate.Year(), periodDate.Month(), periodDate.Day(), startH, startM, startS, 0, loc)
+		windowEnd = time.Date(periodDate.Year(), periodDate.Month(), periodDate.Day(), endH, endM, endS, 0, loc).Add(24 * time.Hour)
+	}
+
+	return &patrolShiftScope{
+		ShiftID:     shiftID,
+		PeriodDate:  periodDate.Format("2006-01-02"),
+		WindowStart: windowStart.UTC(),
+		WindowEnd:   windowEnd.UTC(),
+	}, nil
 }
 
 func (r *Repository) syncRunState(ctx context.Context, tx pgx.Tx, runID string) error {
@@ -1290,6 +1569,76 @@ func (r *Repository) nextRunNo(ctx context.Context, tx pgx.Tx, placeID, userID s
 	var runNo int
 	err := tx.QueryRow(ctx, sql, placeID, userID).Scan(&runNo)
 	return runNo, err
+}
+
+func (r *Repository) listActiveRoundNos(ctx context.Context, tx pgx.Tx, placeID string) ([]int, error) {
+	rows, err := tx.Query(ctx, `
+		select round_no
+		from patrol_round_masters
+		where place_id = $1
+		  and is_active = true
+		order by round_no asc, id asc
+	`, placeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]int, 0)
+	for rows.Next() {
+		var roundNo int
+		if err := rows.Scan(&roundNo); err != nil {
+			return nil, err
+		}
+		out = append(out, roundNo)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) getOrCreateRunByNo(ctx context.Context, tx pgx.Tx, placeID, userID string, runNo, totalActiveSpots int, startedAt *string) (string, bool, bool, error) {
+	const selectSQL = `
+		select id
+		from patrol_runs
+		where place_id = $1
+		  and user_id = $2
+		  and run_no = $3
+		order by created_at desc, id desc
+		limit 1
+		for update
+	`
+	var runID string
+	err := tx.QueryRow(ctx, selectSQL, placeID, userID, runNo).Scan(&runID)
+	if err == nil {
+		return runID, true, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", false, false, err
+	}
+
+	runID = newPatrolRunID()
+	const insertSQL = `
+		insert into patrol_runs (id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at)
+		values ($1,$2,$3,$4,$5,$6,'active',coalesce($7::timestamptz, now()))
+	`
+	if _, err := tx.Exec(ctx, insertSQL, runID, placeID, userID, nil, runNo, totalActiveSpots, startedAt); err != nil {
+		return "", false, false, err
+	}
+	return runID, false, true, nil
+}
+
+func (r *Repository) runAlreadyHasSpot(ctx context.Context, tx pgx.Tx, runID, spotID string) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		select exists(
+			select 1
+			from patrol_scans
+			where patrol_run_id = $1
+			  and spot_id = $2
+		)
+	`, runID, spotID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (r *Repository) hasRoundMasters(ctx context.Context, tx pgx.Tx, placeID string) (bool, error) {
