@@ -575,6 +575,8 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 				s.spot_code,
 				s.spot_name,
 				s.status as spot_status,
+				inferred_shift.id as shift_id,
+				inferred_shift.name as shift_name,
 				ps.user_id,
 				u.full_name,
 				ps.patrol_run_id,
@@ -587,6 +589,19 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 			join users u on u.id = ps.user_id
 			join places p on p.id = ps.place_id
 			join spots s on s.id = ps.spot_id
+			left join lateral (
+				select shf.id, shf.name
+				from shifts shf
+				where shf.place_id = ps.place_id
+				  and shf.is_active = true
+				  and (
+					(shf.start_time <= shf.end_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time)
+					or
+					(shf.start_time > shf.end_time and ((ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time or (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time))
+				  )
+				order by shf.start_time asc, shf.created_at asc, shf.id asc
+				limit 1
+			) inferred_shift on true
 			%s
 		),
 		run_order as (
@@ -620,6 +635,8 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 			min(spot_code) as spot_code,
 			min(spot_name) as spot_name,
 			min(spot_status) as spot_status,
+			max(shift_id::text) filter (where latest_rank = 1)::uuid as shift_id,
+			max(shift_name) filter (where latest_rank = 1) as shift_name,
 			ro.round_no,
 			count(*)::int as total_scans,
 			rt.total_rounds,
@@ -652,6 +669,8 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 			&item.SpotCode,
 			&item.SpotName,
 			&item.SpotStatus,
+			&item.ShiftID,
+			&item.ShiftName,
 			&item.RoundNo,
 			&item.TotalScans,
 			&item.TotalRounds,
@@ -806,8 +825,8 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 			s.spot_code,
 			s.spot_name,
 			s.status as spot_status,
-			a.shift_id,
-			sh.name as shift_name,
+			inferred_shift.id as shift_id,
+			inferred_shift.name as shift_name,
 			to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at,
 			ps.user_id,
 			u.full_name as user_name,
@@ -819,8 +838,19 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 		join users u on u.id = ps.user_id
 		join places p on p.id = ps.place_id
 		join spots s on s.id = ps.spot_id
-		left join attendances a on a.id = ps.attendance_id
-		left join shifts sh on sh.id = a.shift_id
+		left join lateral (
+			select shf.id, shf.name
+			from shifts shf
+			where shf.place_id = ps.place_id
+			  and shf.is_active = true
+			  and (
+				(shf.start_time <= shf.end_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time)
+				or
+				(shf.start_time > shf.end_time and ((ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time or (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time))
+			  )
+			order by shf.start_time asc, shf.created_at asc, shf.id asc
+			limit 1
+		) inferred_shift on true
 		%s
 		order by %s %s, ps.id asc
 		%s
@@ -884,10 +914,17 @@ func buildPatrolScanWhere(filters PatrolScanFilters) (string, []any) {
 	}
 	if filters.ShiftID != "" {
 		args = append(args, filters.ShiftID)
-		where = append(where, fmt.Sprintf(`ps.attendance_id in (
-			select a.id
-			from attendances a
-			where a.shift_id = $%d
+		where = append(where, fmt.Sprintf(`exists (
+			select 1
+			from shifts shf
+			where shf.id = $%d
+			  and shf.place_id = ps.place_id
+			  and shf.is_active = true
+			  and (
+				(shf.start_time <= shf.end_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time and (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time)
+				or
+				(shf.start_time > shf.end_time and ((ps.scanned_at at time zone 'Asia/Jakarta')::time >= shf.start_time or (ps.scanned_at at time zone 'Asia/Jakarta')::time < shf.end_time))
+			  )
 		)`, len(args)))
 	}
 	if filters.SpotID != "" {
