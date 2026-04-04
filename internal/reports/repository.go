@@ -569,6 +569,7 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 	sql := fmt.Sprintf(`
 		with filtered as (
 			select
+				ps.id,
 				ps.place_id,
 				p.place_name,
 				ps.spot_id,
@@ -578,13 +579,13 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 				inferred_shift.id as shift_id,
 				inferred_shift.name as shift_name,
 				ps.user_id,
-				u.full_name,
+				u.full_name as user_name,
 				ps.patrol_run_id,
 				ps.scanned_at,
 				to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at_label,
 				%s,
 				ps.note,
-				ps.id
+				count(*) over(partition by ps.spot_id) as total_scans_per_spot
 			from patrol_scans ps
 			join users u on u.id = ps.user_id
 			join places p on p.id = ps.place_id
@@ -614,44 +615,38 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 		round_totals as (
 			select count(*)::int as total_rounds
 			from run_order
-		),
-		ranked as (
-			select
-				*,
-				row_number() over(partition by spot_id, patrol_run_id order by scanned_at desc, id desc) as latest_rank,
-				row_number() over(
-					partition by spot_id, patrol_run_id
-					order by
-						case when photo_url is null then 1 else 0 end asc,
-						scanned_at desc,
-						id desc
-				) as photo_rank
-			from filtered
 		)
 		select
-			min(place_id::text)::uuid as place_id,
-			min(place_name) as place_name,
-			spot_id,
-			min(spot_code) as spot_code,
-			min(spot_name) as spot_name,
-			min(spot_status) as spot_status,
-			max(shift_id::text) filter (where latest_rank = 1)::uuid as shift_id,
-			max(shift_name) filter (where latest_rank = 1) as shift_name,
+			f.id,
+			f.place_id,
+			f.place_name,
+			f.spot_id,
+			f.spot_code,
+			f.spot_name,
+			f.spot_status,
 			ro.round_no,
-			count(*)::int as total_scans,
+			f.total_scans_per_spot::int as total_scans,
 			rt.total_rounds,
-			max(scanned_at_label) filter (where latest_rank = 1) as last_scanned_at,
-			max(user_id::text) filter (where latest_rank = 1)::uuid as last_user_id,
-			max(full_name) filter (where latest_rank = 1) as last_user_name,
-			ranked.patrol_run_id,
-			max(photo_url) filter (where photo_rank = 1 and photo_url is not null) as photo_url,
-			max(note) filter (where latest_rank = 1) as last_note
-		from ranked
-		join run_order ro on ro.patrol_run_id = ranked.patrol_run_id
+			f.scanned_at_label as last_scanned_at,
+			f.user_id,
+			f.user_name as last_user_name,
+			f.patrol_run_id,
+			f.photo_url,
+			f.note as last_note,
+			f.shift_id,
+			f.shift_name,
+			ro.round_no,
+			f.scanned_at_label as scanned_at,
+			f.user_id,
+			f.user_name,
+			f.patrol_run_id,
+			f.photo_url,
+			f.note
+		from filtered f
+		join run_order ro on ro.patrol_run_id = f.patrol_run_id
 		cross join round_totals rt
 		%s
-		group by spot_id, ranked.patrol_run_id, ro.round_no, rt.total_rounds
-		order by ro.round_no asc, min(scanned_at) asc, min(spot_code) asc, spot_id asc
+		order by ro.round_no asc, f.scanned_at asc, f.id asc
 	`, tzArg, photoURLSelect, whereSQL, buildPatrolRoundFilter(filters.RoundNo))
 	rowsDB, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -663,14 +658,13 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 	for rowsDB.Next() {
 		var item PatrolScanReportRow
 		if err := rowsDB.Scan(
+			&item.ID,
 			&item.PlaceID,
 			&item.PlaceName,
 			&item.SpotID,
 			&item.SpotCode,
 			&item.SpotName,
 			&item.SpotStatus,
-			&item.ShiftID,
-			&item.ShiftName,
 			&item.RoundNo,
 			&item.TotalScans,
 			&item.TotalRounds,
@@ -680,6 +674,15 @@ func (r *Repository) queryPatrolScansDownload(ctx context.Context, filters Patro
 			&item.LastPatrolRunID,
 			&item.PhotoURL,
 			&item.LastNote,
+			&item.ShiftID,
+			&item.ShiftName,
+			&item.RoundNo,
+			&item.ScannedAt,
+			&item.UserID,
+			&item.UserName,
+			&item.PatrolRunID,
+			&item.PhotoURL,
+			&item.Note,
 		); err != nil {
 			return nil, err
 		}

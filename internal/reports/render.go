@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -237,6 +238,88 @@ func renderPatrolSummaryInfo(pdf *gofpdf.Fpdf, input patrolPDFInput) {
 	pdf.Text(74, 166, safeText(input.ShiftLabel, "ALL"))
 	pdf.Text(74, 176, safeText(input.RoundLabel, "ALL"))
 	pdf.Text(74, 186, safeText(input.TotalPatrol, "0"))
+
+	renderPatrolSpotSummaryTable(pdf, input.Rows, 18, 198)
+}
+
+type patrolSpotSummaryRow struct {
+	SpotLabel  string
+	TotalScans int
+}
+
+func renderPatrolSpotSummaryTable(pdf *gofpdf.Fpdf, rows []PatrolScanReportRow, x, y float64) {
+	summaryRows := buildPatrolSpotSummaryRows(rows)
+	if len(summaryRows) == 0 {
+		return
+	}
+
+	const (
+		tableW     = 112.0
+		headerH    = 7.0
+		rowH       = 6.0
+		maxRows    = 5
+		totalColW  = 22.0
+		paddingX   = 2.2
+	)
+
+	pdf.SetDrawColor(190, 196, 204)
+	pdf.SetLineWidth(0.18)
+	pdf.SetFillColor(228, 236, 247)
+	pdf.Rect(x, y, tableW, headerH, "FD")
+	pdf.SetTextColor(60, 69, 82)
+	pdf.SetFont("Arial", "B", 9)
+	pdf.SetXY(x+paddingX, y+1.8)
+	pdf.CellFormat(tableW-totalColW-paddingX*2, 3.4, "Nama Spot", "", 0, "L", false, 0, "")
+	pdf.CellFormat(totalColW, 3.4, "Total Scan", "", 0, "C", false, 0, "")
+
+	displayRows := summaryRows
+	if len(displayRows) > maxRows {
+		displayRows = displayRows[:maxRows]
+	}
+
+	currentY := y + headerH
+	pdf.SetFont("Arial", "", 8.4)
+	for _, row := range displayRows {
+		pdf.Rect(x, currentY, tableW, rowH, "D")
+		pdf.SetXY(x+paddingX, currentY+1.2)
+		pdf.CellFormat(tableW-totalColW-paddingX*2, 3.6, truncateCell(row.SpotLabel, 34), "", 0, "L", false, 0, "")
+		pdf.CellFormat(totalColW, 3.6, stringifyInt(row.TotalScans), "", 0, "C", false, 0, "")
+		currentY += rowH
+	}
+
+	if len(summaryRows) > maxRows {
+		pdf.SetTextColor(120, 126, 136)
+		pdf.SetFont("Arial", "", 7.6)
+		pdf.Text(x, currentY+4.2, fmt.Sprintf("+%d spot lainnya", len(summaryRows)-maxRows))
+	}
+}
+
+func buildPatrolSpotSummaryRows(rows []PatrolScanReportRow) []patrolSpotSummaryRow {
+	counts := make(map[string]int)
+	labels := make(map[string]string)
+	for _, row := range rows {
+		spotID := strings.TrimSpace(row.SpotID)
+		if spotID == "" {
+			continue
+		}
+		counts[spotID]++
+		labels[spotID] = strings.TrimSpace(safeText(row.SpotName, "-") + " (" + safeText(row.SpotCode, "-") + ")")
+	}
+
+	out := make([]patrolSpotSummaryRow, 0, len(counts))
+	for spotID, total := range counts {
+		out = append(out, patrolSpotSummaryRow{
+			SpotLabel:  labels[spotID],
+			TotalScans: total,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalScans != out[j].TotalScans {
+			return out[i].TotalScans > out[j].TotalScans
+		}
+		return out[i].SpotLabel < out[j].SpotLabel
+	})
+	return out
 }
 
 func renderAttendanceDetailPages(pdf *gofpdf.Fpdf, input attendancePDFInput) {
