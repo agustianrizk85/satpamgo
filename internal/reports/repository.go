@@ -132,6 +132,7 @@ type VisitorReportSummary struct {
 }
 
 type PatrolScanReportRow struct {
+	ID              string  `json:"id"`
 	PlaceID         string  `json:"place_id"`
 	PlaceName       string  `json:"place_name"`
 	SpotID          string  `json:"spot_id"`
@@ -145,7 +146,14 @@ type PatrolScanReportRow struct {
 	LastUserID      string  `json:"last_user_id"`
 	LastUserName    string  `json:"last_user_name"`
 	LastPatrolRunID string  `json:"last_patrol_run_id"`
+	ShiftID         *string `json:"shift_id"`
+	ShiftName       *string `json:"shift_name"`
+	ScannedAt       string  `json:"scanned_at"`
+	UserID          string  `json:"user_id"`
+	UserName        string  `json:"user_name"`
+	PatrolRunID     string  `json:"patrol_run_id"`
 	PhotoURL        *string `json:"photo_url"`
+	Note            *string `json:"note"`
 	LastNote        *string `json:"last_note"`
 }
 
@@ -763,14 +771,14 @@ func (r *Repository) PatrolScanRounds(ctx context.Context, filters PatrolScanFil
 
 func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFilters, query listquery.Query, paged bool) ([]PatrolScanReportRow, int, error) {
 	sortColumn := map[string]string{
-		"scannedAt":   "last_scanned_at_sort",
-		"patrolRunId": "last_patrol_run_id",
-		"userName":    "last_user_name",
-		"placeName":   "place_name",
-		"spotName":    "spot_name",
+		"scannedAt":   "ps.scanned_at",
+		"patrolRunId": "ps.patrol_run_id",
+		"userName":    "u.full_name",
+		"placeName":   "p.place_name",
+		"spotName":    "s.spot_name",
 	}[query.SortBy]
 	if sortColumn == "" {
-		sortColumn = "last_scanned_at_sort"
+		sortColumn = "ps.scanned_at"
 	}
 	sortDirection := "desc"
 	if query.SortOrder == listquery.SortAsc {
@@ -790,61 +798,31 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 	}
 	photoURLSelect := r.patrolScanPhotoURLSelectExpr(ctx)
 	sql := fmt.Sprintf(`
-		with filtered as (
-			select
-				ps.place_id,
-				p.place_name,
-				ps.spot_id,
-				s.spot_code,
-				s.spot_name,
-				s.status as spot_status,
-				ps.user_id,
-				u.full_name,
-				ps.patrol_run_id,
-				ps.scanned_at,
-				to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at_label,
-				%s,
-				ps.note,
-				ps.id
-			from patrol_scans ps
-			join users u on u.id = ps.user_id
-			join places p on p.id = ps.place_id
-			join spots s on s.id = ps.spot_id
-			%s
-		),
-		ranked as (
-			select
-				*,
-				row_number() over(partition by spot_id order by scanned_at desc, id desc) as latest_rank,
-				row_number() over(
-					partition by spot_id
-					order by
-						case when photo_url is null then 1 else 0 end asc,
-						scanned_at desc,
-						id desc
-				) as photo_rank
-			from filtered
-		)
 		select
-			min(place_id::text)::uuid as place_id,
-			min(place_name) as place_name,
-			spot_id,
-			min(spot_code) as spot_code,
-			min(spot_name) as spot_name,
-			min(spot_status) as spot_status,
-			count(*)::int as total_scans,
-			count(distinct patrol_run_id)::int as total_rounds,
-			max(scanned_at_label) filter (where latest_rank = 1) as last_scanned_at,
-			max(user_id::text) filter (where latest_rank = 1)::uuid as last_user_id,
-			max(full_name) filter (where latest_rank = 1) as last_user_name,
-			max(patrol_run_id) filter (where latest_rank = 1) as last_patrol_run_id,
-			max(photo_url) filter (where photo_rank = 1 and photo_url is not null) as photo_url,
-			max(note) filter (where latest_rank = 1) as last_note,
-			max(scanned_at) filter (where latest_rank = 1) as last_scanned_at_sort,
+			ps.id,
+			ps.place_id,
+			p.place_name,
+			ps.spot_id,
+			s.spot_code,
+			s.spot_name,
+			s.status as spot_status,
+			a.shift_id,
+			sh.name as shift_name,
+			to_char(ps.scanned_at at time zone %s, 'YYYY-MM-DD HH24:MI:SS') as scanned_at,
+			ps.user_id,
+			u.full_name as user_name,
+			ps.patrol_run_id,
+			%s,
+			ps.note,
 			count(*) over()::int as total_count
-		from ranked
-		group by spot_id
-		order by %s %s, spot_id asc
+		from patrol_scans ps
+		join users u on u.id = ps.user_id
+		join places p on p.id = ps.place_id
+		join spots s on s.id = ps.spot_id
+		left join attendances a on a.id = ps.attendance_id
+		left join shifts sh on sh.id = a.shift_id
+		%s
+		order by %s %s, ps.id asc
 		%s
 	`, tzArg, photoURLSelect, whereSQL, sortColumn, sortDirection, limitOffset)
 	rowsDB, err := r.db.Query(ctx, sql, args...)
@@ -856,23 +834,22 @@ func (r *Repository) queryPatrolScans(ctx context.Context, filters PatrolScanFil
 	total := 0
 	for rowsDB.Next() {
 		var item PatrolScanReportRow
-		var lastScannedAtSort any
 		if err := rowsDB.Scan(
+			&item.ID,
 			&item.PlaceID,
 			&item.PlaceName,
 			&item.SpotID,
 			&item.SpotCode,
 			&item.SpotName,
 			&item.SpotStatus,
-			&item.TotalScans,
-			&item.TotalRounds,
-			&item.LastScannedAt,
-			&item.LastUserID,
-			&item.LastUserName,
-			&item.LastPatrolRunID,
+			&item.ShiftID,
+			&item.ShiftName,
+			&item.ScannedAt,
+			&item.UserID,
+			&item.UserName,
+			&item.PatrolRunID,
 			&item.PhotoURL,
-			&item.LastNote,
-			&lastScannedAtSort,
+			&item.Note,
 			&total,
 		); err != nil {
 			return nil, 0, err
