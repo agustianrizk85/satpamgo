@@ -646,6 +646,7 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		UserID       string  `json:"userId"`
 		SpotID       string  `json:"spotId"`
 		PatrolRunID  string  `json:"patrolRunId"`
+		RunNo        *int    `json:"runNo"`
 		AttendanceID *string `json:"attendanceId"`
 		ScannedAt    *string `json:"scannedAt"`
 		SubmitAt     *string `json:"submitAt"`
@@ -664,16 +665,22 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "patrolRunId must be valid UUID")
 		return
 	}
+	if body.RunNo != nil && *body.RunNo < 1 {
+		web.WriteError(w, http.StatusBadRequest, "runNo must be >= 1")
+		return
+	}
 	attendanceID := trimStringPtr(body.AttendanceID)
 	if attendanceID != nil && !web.IsUUID(*attendanceID) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
 	}
-	result, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), strings.TrimSpace(body.PatrolRunID), attendanceID, trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
+	result, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.UserID), strings.TrimSpace(body.SpotID), strings.TrimSpace(body.PatrolRunID), body.RunNo, attendanceID, trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt), trimStringPtr(body.PhotoURL), trimStringPtr(body.Note))
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAlreadyExists):
 			web.WriteError(w, http.StatusConflict, "Patrol scan already exists")
+		case errors.Is(err, ErrPatrolRoundMasterNotFound):
+			web.WriteError(w, http.StatusBadRequest, "runNo not found in master ronde for this place")
 		case errors.Is(err, ErrPatrolRunNotFound):
 			web.WriteError(w, http.StatusBadRequest, "Patrol run not found for selected place/user")
 		case errors.Is(err, ErrPatrolRunClosed):
