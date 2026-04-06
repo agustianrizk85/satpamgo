@@ -82,6 +82,8 @@ type PatrolRun struct {
 	PlaceID            string     `json:"place_id"`
 	UserID             string     `json:"user_id"`
 	AttendanceID       *string    `json:"attendance_id"`
+	ShiftID            *string    `json:"shift_id"`
+	ShiftName          *string    `json:"shift_name"`
 	RunNo              int        `json:"run_no"`
 	TotalActiveSpots   int        `json:"total_active_spots"`
 	Status             string     `json:"status"`
@@ -503,6 +505,8 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 			pr.place_id,
 			pr.user_id,
 			pr.attendance_id,
+			inferred_shift.id as shift_id,
+			inferred_shift.name as shift_name,
 			pr.run_no,
 			pr.total_active_spots,
 			pr.status,
@@ -515,7 +519,19 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 			count(*) over()::int as total_count
 		from patrol_runs pr
 		left join patrol_scans ps on ps.patrol_run_id = pr.id
-		left join attendances a on a.id = pr.attendance_id
+		left join lateral (
+			select shf.id, shf.name
+			from shifts shf
+			where shf.place_id = pr.place_id
+			  and shf.is_active = true
+			  and (
+				(shf.start_time <= shf.end_time and (pr.started_at at time zone 'Asia/Jakarta')::time >= shf.start_time and (pr.started_at at time zone 'Asia/Jakarta')::time < shf.end_time)
+				or
+				(shf.start_time > shf.end_time and ((pr.started_at at time zone 'Asia/Jakarta')::time >= shf.start_time or (pr.started_at at time zone 'Asia/Jakarta')::time < shf.end_time))
+			  )
+			order by shf.start_time asc, shf.created_at asc, shf.id asc
+			limit 1
+		) inferred_shift on true
 		where pr.place_id = $1
 	`
 	args := []any{placeID}
@@ -537,7 +553,7 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 	}
 	if shiftID != "" {
 		args = append(args, shiftID)
-		sql += fmt.Sprintf(" and a.shift_id = $%d", len(args))
+		sql += fmt.Sprintf(" and inferred_shift.id = $%d", len(args))
 	}
 	if runNo != nil {
 		args = append(args, *runNo)
@@ -558,7 +574,7 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 
 	args = append(args, query.PageSize, query.Offset)
 	sql += fmt.Sprintf(`
-		group by pr.id
+		group by pr.id, inferred_shift.id, inferred_shift.name
 		order by %s %s, pr.id asc
 		limit $%d offset $%d
 	`, sortColumn, sortDirection, len(args)-1, len(args))
@@ -578,6 +594,8 @@ func (r *Repository) ListRuns(ctx context.Context, actorUserID, actorRole, place
 			&item.PlaceID,
 			&item.UserID,
 			&item.AttendanceID,
+			&item.ShiftID,
+			&item.ShiftName,
 			&item.RunNo,
 			&item.TotalActiveSpots,
 			&item.Status,
@@ -606,6 +624,8 @@ func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID s
 			pr.place_id,
 			pr.user_id,
 			pr.attendance_id,
+			inferred_shift.id as shift_id,
+			inferred_shift.name as shift_name,
 			pr.run_no,
 			pr.total_active_spots,
 			pr.status,
@@ -617,6 +637,19 @@ func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID s
 			count(distinct ps.spot_id)::int as unique_scanned_spots
 		from patrol_runs pr
 		left join patrol_scans ps on ps.patrol_run_id = pr.id
+		left join lateral (
+			select shf.id, shf.name
+			from shifts shf
+			where shf.place_id = pr.place_id
+			  and shf.is_active = true
+			  and (
+				(shf.start_time <= shf.end_time and (pr.started_at at time zone 'Asia/Jakarta')::time >= shf.start_time and (pr.started_at at time zone 'Asia/Jakarta')::time < shf.end_time)
+				or
+				(shf.start_time > shf.end_time and ((pr.started_at at time zone 'Asia/Jakarta')::time >= shf.start_time or (pr.started_at at time zone 'Asia/Jakarta')::time < shf.end_time))
+			  )
+			order by shf.start_time asc, shf.created_at asc, shf.id asc
+			limit 1
+		) inferred_shift on true
 		where pr.id = $1
 	`
 	args := []any{runID}
@@ -628,7 +661,7 @@ func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID s
 			where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null
 		)`, len(args))
 	}
-	sql += ` group by pr.id`
+	sql += ` group by pr.id, inferred_shift.id, inferred_shift.name`
 
 	var item PatrolRun
 	err := r.db.QueryRow(ctx, sql, args...).Scan(
@@ -636,6 +669,8 @@ func (r *Repository) GetRun(ctx context.Context, actorUserID, actorRole, runID s
 		&item.PlaceID,
 		&item.UserID,
 		&item.AttendanceID,
+		&item.ShiftID,
+		&item.ShiftName,
 		&item.RunNo,
 		&item.TotalActiveSpots,
 		&item.Status,

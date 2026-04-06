@@ -228,10 +228,44 @@ func (r *Repository) Update(ctx context.Context, shiftID string, input UpdateInp
 }
 
 func (r *Repository) Delete(ctx context.Context, shiftID string) (string, error) {
-	const sql = `delete from shifts where id = $1 returning id`
-	var id string
-	err := r.db.QueryRow(ctx, sql, shiftID).Scan(&id)
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const detachSQL = `
+		with target_assignments as (
+			select id
+			from spot_assignments
+			where shift_id = $1
+		),
+		detached_attendances as (
+			update attendances
+			set assignment_id = null,
+			    shift_id = null,
+			    updated_at = now()
+			where shift_id = $1
+			   or assignment_id in (select id from target_assignments)
+			returning id
+		),
+		detached_leave_requests as (
+			update leave_requests
+			set assignment_id = null,
+			    updated_at = now()
+			where assignment_id in (select id from target_assignments)
+			returning id
+		)
+		delete from spot_assignments
+		where shift_id = $1
+	`
+	if _, err := tx.Exec(ctx, detachSQL, shiftID); err != nil {
+		return "", err
+	}
+
+	const deleteSQL = `delete from shifts where id = $1 returning id`
+	var id string
+	if err := tx.QueryRow(ctx, deleteSQL, shiftID).Scan(&id); err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return "", ErrShiftNotFound
@@ -240,6 +274,10 @@ func (r *Repository) Delete(ctx context.Context, shiftID string) (string, error)
 		default:
 			return "", err
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
 	}
 	return id, nil
 }
