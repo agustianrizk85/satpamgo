@@ -591,6 +591,8 @@ func (h *Handler) ListScans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	placeID := strings.TrimSpace(r.URL.Query().Get("placeId"))
+	fromDate := strings.TrimSpace(r.URL.Query().Get("fromDate"))
+	toDate := strings.TrimSpace(r.URL.Query().Get("toDate"))
 	if !web.IsUUID(placeID) {
 		web.WriteError(w, http.StatusBadRequest, "placeId is required")
 		return
@@ -605,7 +607,19 @@ func (h *Handler) ListScans(w http.ResponseWriter, r *http.Request) {
 		web.WriteError(w, http.StatusBadRequest, "attendanceId must be valid UUID")
 		return
 	}
-	result, err := h.repo.ListScans(r.Context(), current.UserID, current.Role, placeID, strings.TrimSpace(r.URL.Query().Get("patrolRunId")), strings.TrimSpace(r.URL.Query().Get("userId")), attendanceID, query)
+	if fromDate != "" && !isDateOnly(fromDate) {
+		web.WriteError(w, http.StatusBadRequest, "fromDate must use YYYY-MM-DD")
+		return
+	}
+	if toDate != "" && !isDateOnly(toDate) {
+		web.WriteError(w, http.StatusBadRequest, "toDate must use YYYY-MM-DD")
+		return
+	}
+	if fromDate != "" && toDate != "" && fromDate > toDate {
+		web.WriteError(w, http.StatusBadRequest, "fromDate cannot be greater than toDate")
+		return
+	}
+	result, err := h.repo.ListScans(r.Context(), current.UserID, current.Role, placeID, strings.TrimSpace(r.URL.Query().Get("patrolRunId")), strings.TrimSpace(r.URL.Query().Get("userId")), attendanceID, fromDate, toDate, query)
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol scans")
 		return

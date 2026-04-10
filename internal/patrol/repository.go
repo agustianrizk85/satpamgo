@@ -913,7 +913,7 @@ func (r *Repository) DeleteRun(ctx context.Context, id string) (string, error) {
 	return out, nil
 }
 
-func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, patrolRunID, userID, attendanceID string, query listquery.Query) (listquery.Response[PatrolScan], error) {
+func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, patrolRunID, userID, attendanceID, fromDate, toDate string, query listquery.Query) (listquery.Response[PatrolScan], error) {
 	sortColumn := map[string]string{"scannedAt": "scanned_at", "submitAt": "submit_at", "placeId": "place_id", "userId": "user_id", "spotId": "spot_id", "patrolRunId": "patrol_run_id"}[query.SortBy]
 	if sortColumn == "" {
 		sortColumn = "scanned_at"
@@ -943,6 +943,14 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	if attendanceID != "" {
 		args = append(args, attendanceID)
 		sql += fmt.Sprintf(" and ps.attendance_id = $%d", len(args))
+	}
+	if fromDate != "" {
+		args = append(args, fromDate)
+		sql += fmt.Sprintf(" and (ps.scanned_at at time zone 'Asia/Jakarta')::date >= $%d::date", len(args))
+	}
+	if toDate != "" {
+		args = append(args, toDate)
+		sql += fmt.Sprintf(" and (ps.scanned_at at time zone 'Asia/Jakarta')::date <= $%d::date", len(args))
 	}
 	args = append(args, query.PageSize, query.Offset)
 	sql += fmt.Sprintf(" order by %s %s, ps.id asc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
