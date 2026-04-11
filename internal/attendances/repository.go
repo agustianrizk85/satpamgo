@@ -242,7 +242,7 @@ func (r *Repository) autoFillCheckInForPlaceAdmin(ctx context.Context, input *Cr
 }
 
 func (r *Repository) autoFillShift(ctx context.Context, input *CreateInput) error {
-	if input.ShiftID != nil {
+	if input.CheckInAt == nil && input.SubmitAt == nil && input.ShiftID != nil {
 		return nil
 	}
 
@@ -345,32 +345,41 @@ func resolveAttendanceReferenceTime(input *CreateInput) (time.Time, error) {
 func (r *Repository) findBestShiftForAttendance(ctx context.Context, placeID string, referenceAt time.Time) (*string, error) {
 	const sql = `
 		with ref as (
-			select (($2::timestamptz at time zone 'Asia/Jakarta')::time) as local_time
+			select
+				extract(epoch from (($2::timestamptz at time zone 'Asia/Jakarta')::time))::int as local_sec,
+				7200 as shift_grace_sec
+		),
+		candidate as (
+			select
+				s.id,
+				s.start_time,
+				((extract(epoch from s.end_time)::int - extract(epoch from s.start_time)::int + 86400) % 86400) as duration_sec,
+				((ref.local_sec - extract(epoch from s.start_time)::int + 86400) % 86400) as since_start_sec,
+				((extract(epoch from s.start_time)::int - ref.local_sec + 86400) % 86400) as until_start_sec,
+				((ref.local_sec - extract(epoch from s.end_time)::int + 86400) % 86400) as since_end_sec,
+				ref.shift_grace_sec
+			from shifts s
+			cross join ref
+			where s.place_id = $1
+			  and s.is_active = true
 		)
-		select s.id
-		from shifts s
-		cross join ref
-		where s.place_id = $1
-		  and s.is_active = true
+		select id
+		from candidate
 		order by
 			case
-				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then 0
-				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then 0
-				when ref.local_time >= s.start_time then 1
-				else 2
+				when until_start_sec > 0 and until_start_sec <= shift_grace_sec then 0
+				when since_start_sec < duration_sec then 1
+				when since_end_sec <= shift_grace_sec then 2
+				else 3
 			end asc,
 			case
-				when s.start_time <= s.end_time and ref.local_time >= s.start_time and ref.local_time < s.end_time then (ref.local_time - s.start_time)
-				when s.start_time > s.end_time and (ref.local_time >= s.start_time or ref.local_time < s.end_time) then
-					case
-						when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
-						else (interval '24 hours' - (s.start_time - ref.local_time))
-					end
-				when ref.local_time >= s.start_time then (ref.local_time - s.start_time)
-				else (s.start_time - ref.local_time)
+				when until_start_sec > 0 and until_start_sec <= shift_grace_sec then until_start_sec
+				when since_start_sec < duration_sec then since_start_sec
+				when since_end_sec <= shift_grace_sec then since_end_sec
+				else until_start_sec
 			end asc,
-			s.start_time asc,
-			s.id asc
+			start_time asc,
+			id asc
 		limit 1
 	`
 	var shiftID string
