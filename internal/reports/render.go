@@ -238,8 +238,6 @@ func renderPatrolSummaryInfo(pdf *gofpdf.Fpdf, input patrolPDFInput) {
 	pdf.Text(74, 166, safeText(input.ShiftLabel, "ALL"))
 	pdf.Text(74, 176, safeText(input.RoundLabel, "ALL"))
 	pdf.Text(74, 186, safeText(input.TotalPatrol, "0"))
-
-	renderPatrolSpotSummaryTable(pdf, input.Rows, 18, 198)
 }
 
 type patrolSpotSummaryRow struct {
@@ -254,12 +252,12 @@ func renderPatrolSpotSummaryTable(pdf *gofpdf.Fpdf, rows []PatrolScanReportRow, 
 	}
 
 	const (
-		tableW     = 112.0
-		headerH    = 7.0
-		rowH       = 6.0
-		maxRows    = 5
-		totalColW  = 22.0
-		paddingX   = 2.2
+		tableW    = 112.0
+		headerH   = 7.0
+		rowH      = 6.0
+		maxRows   = 5
+		totalColW = 22.0
+		paddingX  = 2.2
 	)
 
 	pdf.SetDrawColor(190, 196, 204)
