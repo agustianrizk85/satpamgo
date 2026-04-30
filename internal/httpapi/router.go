@@ -8,6 +8,7 @@ import (
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
+	"satpam-go/internal/communication"
 	"satpam-go/internal/facility"
 	"satpam-go/internal/leaverequests"
 	"satpam-go/internal/media"
@@ -26,7 +27,7 @@ import (
 	"satpam-go/internal/web"
 )
 
-func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, tokenConfigHandler *tokenconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, apiErrorLogHandler *apierrorlogs.Handler, appVersionHandler *appversions.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
+func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandler *roles.Handler, placeHandler *places.Handler, shiftHandler *shifts.Handler, userPlaceRoleHandler *userplaceroles.Handler, spotHandler *spots.Handler, spotAssignmentHandler *spotassignments.Handler, attendanceConfigHandler *attendanceconfig.Handler, tokenConfigHandler *tokenconfig.Handler, attendanceHandler *attendances.Handler, visitorHandler *visitors.Handler, leaveRequestHandler *leaverequests.Handler, patrolHandler *patrol.Handler, facilityHandler *facility.Handler, recentActivitiesHandler *recentactivities.Handler, reportHandler *reports.Handler, mediaHandler *media.Handler, communicationHandler *communication.Handler, apiErrorLogHandler *apierrorlogs.Handler, appVersionHandler *appversions.Handler, apiErrorLogRepo *apierrorlogs.Repository, tokenService *auth.TokenService, storageRoot string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -119,6 +120,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("GET /api/v1/facility/scans", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.ListScans)))
 	mux.Handle("POST /api/v1/facility/scans", auth.RequireAuth(tokenService, http.HandlerFunc(facilityHandler.CreateScan)))
 	mux.Handle("GET /api/v1/recent-activities", auth.RequireAuth(tokenService, http.HandlerFunc(recentActivitiesHandler.List)))
+	mux.Handle("GET /api/v1/communication/ws", auth.RequireAuth(tokenService, http.HandlerFunc(communicationHandler.WS)))
 	mux.Handle("GET /api/v1/api-error-logs", auth.RequireAuth(tokenService, http.HandlerFunc(apiErrorLogHandler.List)))
 	mux.Handle("GET /api/v1/app-versions", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.List)))
 	mux.Handle("POST /api/v1/app-versions", auth.RequireAuth(tokenService, http.HandlerFunc(appVersionHandler.Create)))

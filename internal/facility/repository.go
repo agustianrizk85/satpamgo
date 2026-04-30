@@ -54,6 +54,7 @@ type Scan struct {
 	SpotID    string    `json:"spot_id"`
 	ItemID    *string   `json:"item_id"`
 	UserID    string    `json:"user_id"`
+	UserName  string    `json:"user_name"`
 	ScannedAt time.Time `json:"scanned_at"`
 	SubmitAt  time.Time `json:"submit_at"`
 	Status    string    `json:"status"`
@@ -244,27 +245,33 @@ func (r *Repository) DeleteItem(ctx context.Context, id string) (string, error) 
 }
 
 func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, placeID, spotID, userID string, query listquery.Query) (listquery.Response[Scan], error) {
-	sortColumn := map[string]string{"scannedAt": "scanned_at", "submitAt": "submit_at", "createdAt": "created_at", "updatedAt": "updated_at", "status": "status", "placeId": "place_id", "spotId": "spot_id", "userId": "user_id"}[query.SortBy]
+	sortColumn := map[string]string{"scannedAt": "fs.scanned_at", "submitAt": "fs.submit_at", "createdAt": "fs.created_at", "updatedAt": "fs.updated_at", "status": "fs.status", "placeId": "fs.place_id", "spotId": "fs.spot_id", "userId": "fs.user_id"}[query.SortBy]
 	if sortColumn == "" {
-		sortColumn = "scanned_at"
+		sortColumn = "fs.scanned_at"
 	}
 	sortDirection := "desc"
 	if query.SortOrder == listquery.SortAsc {
 		sortDirection = "asc"
 	}
-	sql := `select id, place_id, spot_id, item_id, user_id, scanned_at, submit_at, status, note, created_at, updated_at, count(*) over()::int as total_count from facility_check_scans where place_id = $1`
+	sql := `
+		select fs.id, fs.place_id, fs.spot_id, fs.item_id, fs.user_id, coalesce(nullif(u.full_name, ''), u.username) as user_name,
+			fs.scanned_at, fs.submit_at, fs.status, fs.note, fs.created_at, fs.updated_at, count(*) over()::int as total_count
+		from facility_check_scans fs
+		join users u on u.id = fs.user_id
+		where fs.place_id = $1
+	`
 	args := []any{placeID}
 	if !auth.IsGlobalAdminRole(actorRole) {
 		args = append(args, actorUserID)
-		sql += fmt.Sprintf(` and place_id in (select distinct upr.place_id from user_place_roles upr join places p on p.id = upr.place_id where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null)`, len(args))
+		sql += fmt.Sprintf(` and fs.place_id in (select distinct upr.place_id from user_place_roles upr join places p on p.id = upr.place_id where upr.user_id = $%d and upr.is_active = true and p.deleted_at is null)`, len(args))
 	}
 	if spotID != "" {
 		args = append(args, spotID)
-		sql += fmt.Sprintf(" and spot_id = $%d", len(args))
+		sql += fmt.Sprintf(" and fs.spot_id = $%d", len(args))
 	}
 	if userID != "" {
 		args = append(args, userID)
-		sql += fmt.Sprintf(" and user_id = $%d", len(args))
+		sql += fmt.Sprintf(" and fs.user_id = $%d", len(args))
 	}
 	args = append(args, query.PageSize, query.Offset)
 	sql += fmt.Sprintf(" order by %s %s, id asc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
@@ -277,7 +284,7 @@ func (r *Repository) ListScans(ctx context.Context, actorUserID, actorRole, plac
 	total := 0
 	for rows.Next() {
 		var item Scan
-		if err := rows.Scan(&item.ID, &item.PlaceID, &item.SpotID, &item.ItemID, &item.UserID, &item.ScannedAt, &item.SubmitAt, &item.Status, &item.Note, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlaceID, &item.SpotID, &item.ItemID, &item.UserID, &item.UserName, &item.ScannedAt, &item.SubmitAt, &item.Status, &item.Note, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
 			return listquery.Response[Scan]{}, err
 		}
 		data = append(data, item)

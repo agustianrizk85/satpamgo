@@ -58,7 +58,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var body struct {
 		PlaceID string  `json:"placeId"`
-		UserID  string  `json:"userId"`
 		NIK     string  `json:"nik"`
 		Nama    string  `json:"nama"`
 		Tujuan  *string `json:"tujuan"`
@@ -70,11 +69,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body.PlaceID = strings.TrimSpace(body.PlaceID)
-	body.UserID = strings.TrimSpace(body.UserID)
 	body.NIK = strings.TrimSpace(body.NIK)
 	body.Nama = strings.TrimSpace(body.Nama)
-	if !web.IsUUID(body.PlaceID) || !web.IsUUID(body.UserID) || body.NIK == "" || body.Nama == "" {
-		web.WriteError(w, http.StatusBadRequest, "placeId, userId, nik, nama are required")
+	if !web.IsUUID(body.PlaceID) || body.NIK == "" || body.Nama == "" {
+		web.WriteError(w, http.StatusBadRequest, "placeId, nik, nama are required")
 		return
 	}
 	if !auth.IsGlobalAdminRole(current.Role) {
@@ -91,7 +89,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	id, err := h.repo.Create(r.Context(), CreateInput{
 		PlaceID: body.PlaceID,
-		UserID:  body.UserID,
+		UserID:  current.UserID,
 		NIK:     body.NIK,
 		Nama:    body.Nama,
 		Tujuan:  trimStringPtr(body.Tujuan),

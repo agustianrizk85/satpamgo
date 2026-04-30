@@ -28,6 +28,7 @@ type Visitor struct {
 	ID        string    `json:"id"`
 	PlaceID   string    `json:"place_id"`
 	UserID    string    `json:"user_id"`
+	UserName  string    `json:"user_name"`
 	NIK       string    `json:"nik"`
 	Nama      string    `json:"nama"`
 	Tujuan    *string   `json:"tujuan"`
@@ -66,15 +67,15 @@ func NewRepository(db *pgxpool.Pool) *Repository { return &Repository{db: db} }
 
 func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Response[Visitor], error) {
 	sortColumn := map[string]string{
-		"createdAt": "created_at",
-		"updatedAt": "updated_at",
-		"placeId":   "place_id",
-		"userId":    "user_id",
-		"nik":       "nik",
-		"nama":      "nama",
+		"createdAt": "v.created_at",
+		"updatedAt": "v.updated_at",
+		"placeId":   "v.place_id",
+		"userId":    "v.user_id",
+		"nik":       "v.nik",
+		"nama":      "v.nama",
 	}[params.Query.SortBy]
 	if sortColumn == "" {
-		sortColumn = "created_at"
+		sortColumn = "v.created_at"
 	}
 	sortDirection := "desc"
 	if params.Query.SortOrder == listquery.SortAsc {
@@ -82,17 +83,19 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 	}
 
 	sql := `
-		select id, place_id, user_id, nik, nama, tujuan, catatan, created_at, updated_at, count(*) over()::int as total_count
-		from visitors
+		select v.id, v.place_id, v.user_id, coalesce(nullif(u.full_name, ''), u.username) as user_name,
+			v.nik, v.nama, v.tujuan, v.catatan, v.created_at, v.updated_at, count(*) over()::int as total_count
+		from visitors v
+		join users u on u.id = v.user_id
 		where true
 	`
 	args := []any{}
 	if params.PlaceID != "" {
 		args = append(args, params.PlaceID)
-		sql += fmt.Sprintf(" and place_id = $%d", len(args))
+		sql += fmt.Sprintf(" and v.place_id = $%d", len(args))
 	} else if !auth.IsGlobalAdminRole(params.ActorRole) {
 		args = append(args, params.ActorUserID)
-		sql += fmt.Sprintf(` and place_id in (
+		sql += fmt.Sprintf(` and v.place_id in (
 			select distinct upr.place_id
 			from user_place_roles upr
 			join places p on p.id = upr.place_id
@@ -101,10 +104,10 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 	}
 	if params.UserID != "" {
 		args = append(args, params.UserID)
-		sql += fmt.Sprintf(" and user_id = $%d", len(args))
+		sql += fmt.Sprintf(" and v.user_id = $%d", len(args))
 	}
 	args = append(args, params.Query.PageSize, params.Query.Offset)
-	sql += fmt.Sprintf(" order by %s %s nulls last, created_at desc, id desc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
+	sql += fmt.Sprintf(" order by %s %s nulls last, v.created_at desc, v.id desc limit $%d offset $%d", sortColumn, sortDirection, len(args)-1, len(args))
 
 	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -116,7 +119,7 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 	total := 0
 	for rows.Next() {
 		var item Visitor
-		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
+		if err := rows.Scan(&item.ID, &item.PlaceID, &item.UserID, &item.UserName, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt, &total); err != nil {
 			return listquery.Response[Visitor]{}, err
 		}
 		data = append(data, item)
@@ -126,14 +129,16 @@ func (r *Repository) List(ctx context.Context, params ListParams) (listquery.Res
 
 func (r *Repository) FindByID(ctx context.Context, id string) (*Visitor, error) {
 	const sql = `
-		select id, place_id, user_id, nik, nama, tujuan, catatan, created_at, updated_at
-		from visitors
-		where id = $1
+		select v.id, v.place_id, v.user_id, coalesce(nullif(u.full_name, ''), u.username) as user_name,
+			v.nik, v.nama, v.tujuan, v.catatan, v.created_at, v.updated_at
+		from visitors v
+		join users u on u.id = v.user_id
+		where v.id = $1
 		limit 1
 	`
 
 	var item Visitor
-	err := r.db.QueryRow(ctx, sql, id).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt)
+	err := r.db.QueryRow(ctx, sql, id).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.UserName, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -198,13 +203,19 @@ func (r *Repository) Update(ctx context.Context, id string, input UpdateInput) (
 	setParts = append(setParts, "updated_at = now()")
 	args = append(args, id)
 	sql := fmt.Sprintf(`
-		update visitors set %s
-		where id = $%d
-		returning id, place_id, user_id, nik, nama, tujuan, catatan, created_at, updated_at
+		with updated as (
+			update visitors set %s
+			where id = $%d
+			returning id, place_id, user_id, nik, nama, tujuan, catatan, created_at, updated_at
+		)
+		select updated.id, updated.place_id, updated.user_id, coalesce(nullif(u.full_name, ''), u.username) as user_name,
+			updated.nik, updated.nama, updated.tujuan, updated.catatan, updated.created_at, updated.updated_at
+		from updated
+		join users u on u.id = updated.user_id
 	`, strings.Join(setParts, ", "), len(args))
 
 	var item Visitor
-	err := r.db.QueryRow(ctx, sql, args...).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt)
+	err := r.db.QueryRow(ctx, sql, args...).Scan(&item.ID, &item.PlaceID, &item.UserID, &item.UserName, &item.NIK, &item.Nama, &item.Tujuan, &item.Catatan, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

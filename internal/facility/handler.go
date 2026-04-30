@@ -457,7 +457,8 @@ func (h *Handler) ListScans(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
-	if _, ok := auth.AuthFromContext(r.Context()); !ok {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
 		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
 		return
 	}
@@ -465,7 +466,6 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		PlaceID   string  `json:"placeId"`
 		SpotID    string  `json:"spotId"`
 		ItemID    *string `json:"itemId"`
-		UserID    string  `json:"userId"`
 		Status    string  `json:"status"`
 		Note      *string `json:"note"`
 		ScannedAt *string `json:"scannedAt"`
@@ -476,11 +476,11 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := normalizeScanStatus(body.Status)
-	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) || status == "" {
-		web.WriteError(w, http.StatusBadRequest, "placeId, spotId, userId are required and status is invalid")
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.SpotID)) || status == "" {
+		web.WriteError(w, http.StatusBadRequest, "placeId, spotId are required and status is invalid")
 		return
 	}
-	id, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.SpotID), trimUUIDPtr(body.ItemID), strings.TrimSpace(body.UserID), status, trimStringPtr(body.Note), trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt))
+	id, err := h.repo.CreateScan(r.Context(), strings.TrimSpace(body.PlaceID), strings.TrimSpace(body.SpotID), trimUUIDPtr(body.ItemID), current.UserID, status, trimStringPtr(body.Note), trimStringPtr(body.ScannedAt), trimStringPtr(body.SubmitAt))
 	if err != nil {
 		h.writeFacilityError(w, err, "Failed to create facility scan", "Facility scan already exists")
 		return

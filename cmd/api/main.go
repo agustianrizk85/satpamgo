@@ -15,6 +15,7 @@ import (
 	"satpam-go/internal/attendanceconfig"
 	"satpam-go/internal/attendances"
 	"satpam-go/internal/auth"
+	"satpam-go/internal/communication"
 	"satpam-go/internal/config"
 	"satpam-go/internal/database"
 	"satpam-go/internal/facility"
@@ -99,6 +100,7 @@ func main() {
 	mediaHandler := media.NewHandler(mediaService, cfg.UploadMaxBytes)
 	recentActivitiesHandler := recentactivities.NewHandler(recentActivitiesRepo, authRepo)
 	reportHandler := reports.NewHandler(reportRepo, authRepo, cfg.StorageRoot)
+	communicationHandler := communication.NewHandler(communication.NewHub())
 	apiErrorLogHandler := apierrorlogs.NewHandler(apiErrorLogRepo, authRepo)
 	appVersionHandler := appversions.NewHandler(appVersionRepo, authRepo, appVersionStorage, cfg.AppVersionUploadMaxBytes)
 
@@ -111,7 +113,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, tokenConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, apiErrorLogHandler, appVersionHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
+		Handler:      httpapi.NewRouter(authHandler, userHandler, roleHandler, placeHandler, shiftHandler, userPlaceRoleHandler, spotHandler, spotAssignmentHandler, attendanceConfigHandler, tokenConfigHandler, attendanceHandler, visitorHandler, leaveRequestHandler, patrolHandler, facilityHandler, recentActivitiesHandler, reportHandler, mediaHandler, communicationHandler, apiErrorLogHandler, appVersionHandler, apiErrorLogRepo, tokenService, mediaService.Root()),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  60 * time.Second,
