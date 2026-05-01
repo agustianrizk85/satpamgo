@@ -2,6 +2,7 @@ package communication
 
 import (
 	"errors"
+	"sort"
 	"sync"
 )
 
@@ -15,7 +16,9 @@ type Hub struct {
 }
 
 func NewHub() *Hub {
-	return &Hub{rooms: make(map[string]map[string]*Client)}
+	return &Hub{
+		rooms: make(map[string]map[string]*Client),
+	}
 }
 
 func (h *Hub) Join(client *Client) ([]Participant, error) {
@@ -27,6 +30,16 @@ func (h *Hub) Join(client *Client) ([]Participant, error) {
 		room = make(map[string]*Client)
 		h.rooms[client.roomID] = room
 	}
+
+	for peerID, peer := range room {
+		if peer.userID == client.userID {
+			delete(room, peerID)
+			close(peer.send)
+			_ = peer.conn.Close()
+			break
+		}
+	}
+
 	if len(room) >= maxRoomParticipants {
 		return nil, ErrRoomFull
 	}
@@ -35,17 +48,18 @@ func (h *Hub) Join(client *Client) ([]Participant, error) {
 	participants := participantsFromRoom(room)
 
 	joined := ServerMessage{
-		Type:   "peer-joined",
-		RoomID: client.roomID,
-		From:   client.id,
+		Type:         "peer-joined",
+		RoomID:       client.roomID,
+		From:         client.id,
+		Participants: participants,
 	}
-	for id, peer := range room {
-		if id != client.id {
-			peer.enqueue(joined)
-		}
+
+	for _, peer := range room {
+		peer.enqueue(joined)
 	}
 
 	h.broadcastParticipantsLocked(client.roomID, room)
+
 	return participants, nil
 }
 
@@ -57,7 +71,9 @@ func (h *Hub) Leave(client *Client) {
 	if room == nil {
 		return
 	}
-	if _, ok := room[client.id]; !ok {
+
+	current := room[client.id]
+	if current == nil {
 		return
 	}
 
@@ -69,6 +85,7 @@ func (h *Hub) Leave(client *Client) {
 		RoomID: client.roomID,
 		From:   client.id,
 	}
+
 	for _, peer := range room {
 		peer.enqueue(left)
 	}
@@ -77,6 +94,7 @@ func (h *Hub) Leave(client *Client) {
 		delete(h.rooms, client.roomID)
 		return
 	}
+
 	h.broadcastParticipantsLocked(client.roomID, room)
 }
 
@@ -88,6 +106,11 @@ func (h *Hub) Forward(from *Client, message ClientMessage) bool {
 	if room == nil {
 		return false
 	}
+
+	if room[from.id] == nil {
+		return false
+	}
+
 	target := room[message.To]
 	if target == nil {
 		return false
@@ -101,6 +124,7 @@ func (h *Hub) Forward(from *Client, message ClientMessage) bool {
 		SDP:       message.SDP,
 		Candidate: message.Candidate,
 	})
+
 	return true
 }
 
@@ -110,6 +134,7 @@ func (h *Hub) broadcastParticipantsLocked(roomID string, room map[string]*Client
 		RoomID:       roomID,
 		Participants: participantsFromRoom(room),
 	}
+
 	for _, peer := range room {
 		peer.enqueue(message)
 	}
@@ -117,6 +142,7 @@ func (h *Hub) broadcastParticipantsLocked(roomID string, room map[string]*Client
 
 func participantsFromRoom(room map[string]*Client) []Participant {
 	participants := make([]Participant, 0, len(room))
+
 	for _, client := range room {
 		participants = append(participants, Participant{
 			ID:     client.id,
@@ -124,5 +150,13 @@ func participantsFromRoom(room map[string]*Client) []Participant {
 			Role:   client.role,
 		})
 	}
+
+	sort.Slice(participants, func(i, j int) bool {
+		if participants[i].UserID == participants[j].UserID {
+			return participants[i].ID < participants[j].ID
+		}
+		return participants[i].UserID < participants[j].UserID
+	})
+
 	return participants
 }

@@ -3,7 +3,9 @@ package communication
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 
@@ -30,13 +32,19 @@ func NewHandler(hub *Hub) *Handler {
 }
 
 func (h *Handler) WS(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.hub == nil {
+		log.Println("communication ws error: hub is nil")
+		web.WriteError(w, http.StatusInternalServerError, "Voice hub belum siap")
+		return
+	}
+
 	authCtx, ok := auth.AuthFromContext(r.Context())
 	if !ok {
 		web.WriteError(w, http.StatusUnauthorized, "Missing bearer token")
 		return
 	}
 
-	roomID := r.URL.Query().Get("roomId")
+	roomID := strings.TrimSpace(r.URL.Query().Get("roomId"))
 	if roomID == "" {
 		web.WriteError(w, http.StatusBadRequest, "Missing roomId")
 		return
@@ -44,6 +52,7 @@ func (h *Handler) WS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		log.Printf("communication ws upgrade error: %v", err)
 		return
 	}
 
@@ -59,7 +68,11 @@ func (h *Handler) WS(w http.ResponseWriter, r *http.Request) {
 
 	participants, err := h.hub.Join(client)
 	if err != nil {
-		_ = conn.WriteJSON(ServerMessage{Type: "error", RoomID: roomID, Message: "Room penuh, maksimal 4 petugas"})
+		_ = conn.WriteJSON(ServerMessage{
+			Type:    "error",
+			RoomID:  roomID,
+			Message: "Room penuh, maksimal 4 petugas",
+		})
 		_ = conn.Close()
 		return
 	}

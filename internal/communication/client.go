@@ -11,7 +11,7 @@ const (
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
 	maxMessageSize = 32 * 1024
-	sendBufferSize = 32
+	sendBufferSize = 64
 )
 
 type Client struct {
@@ -24,10 +24,12 @@ type Client struct {
 	send   chan ServerMessage
 }
 
-func (c *Client) enqueue(message ServerMessage) {
+func (c *Client) enqueue(message ServerMessage) bool {
 	select {
 	case c.send <- message:
+		return true
 	default:
+		return false
 	}
 }
 
