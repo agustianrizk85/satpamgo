@@ -19,19 +19,26 @@ type AuthContext struct {
 
 func RequireAuth(tokenService *TokenService, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenText := ""
+
 		header := r.Header.Get("Authorization")
-		if header == "" {
+		if header != "" {
+			parts := strings.SplitN(header, " ", 2)
+			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+				tokenText = strings.TrimSpace(parts[1])
+			}
+		}
+
+		if tokenText == "" {
+			tokenText = strings.TrimSpace(r.URL.Query().Get("token"))
+		}
+
+		if tokenText == "" {
 			web.WriteError(w, http.StatusUnauthorized, "Missing bearer token")
 			return
 		}
 
-		parts := strings.SplitN(header, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			web.WriteError(w, http.StatusUnauthorized, "Missing bearer token")
-			return
-		}
-
-		claims, err := tokenService.VerifyAccess(parts[1])
+		claims, err := tokenService.VerifyAccess(tokenText)
 		if err != nil {
 			web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
 			return
