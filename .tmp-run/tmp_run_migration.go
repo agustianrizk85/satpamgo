@@ -26,6 +26,7 @@ func main() {
 		"migrations/20260402_create_token_configs.sql",
 		"migrations/20260403_create_patrol_round_masters.sql",
 		"migrations/20260404_drop_patrol_scan_spot_uniques.sql",
+		"migrations/20260503_add_fcm_token_to_users.sql",
 	}
 
 	db, err := sql.Open("pgx", dsn)
