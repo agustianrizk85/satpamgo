@@ -277,7 +277,8 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.IsSuperUserRole(current.Role) {
+	isSelf := current.UserID == userID
+	if !auth.IsSuperUserRole(current.Role) && !isSelf {
 		err := h.ensureScopedTargetAccess(r, current, userID)
 		if err != nil {
 			if errors.Is(err, ErrUserNotFound) {
@@ -361,6 +362,15 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		input.Status = &value
+	}
+	if raw, exists := body["fcmToken"]; exists {
+		value, ok := raw.(string)
+		if !ok {
+			web.WriteError(w, http.StatusBadRequest, "fcmToken must be string")
+			return
+		}
+		value = strings.TrimSpace(value)
+		input.FCMToken = &value
 	}
 
 	item, err := h.repo.Update(r.Context(), userID, input)

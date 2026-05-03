@@ -33,6 +33,7 @@ type User struct {
 	RoleCode  string    `json:"role_code"`
 	FullName  string    `json:"full_name"`
 	Username  string    `json:"username"`
+	FCMToken  *string   `json:"fcm_token"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -62,6 +63,7 @@ type UpdateInput struct {
 	Username *string
 	Password *string
 	Status   *string
+	FCMToken *string
 }
 
 type ListUsersParams struct {
@@ -100,6 +102,7 @@ func (r *Repository) ListUsers(ctx context.Context, params ListUsersParams) (lis
 			r.code as role_code,
 			u.full_name,
 			u.username,
+			u.fcm_token,
 			u.status,
 			u.created_at,
 			u.updated_at,
@@ -156,6 +159,7 @@ func (r *Repository) ListUsers(ctx context.Context, params ListUsersParams) (lis
 			&item.RoleCode,
 			&item.FullName,
 			&item.Username,
+			&item.FCMToken,
 			&item.Status,
 			&item.CreatedAt,
 			&item.UpdatedAt,
@@ -190,6 +194,7 @@ func (r *Repository) FindByID(ctx context.Context, params ListUsersParams, userI
 			r.code as role_code,
 			u.full_name,
 			u.username,
+			u.fcm_token,
 			u.status,
 			u.created_at,
 			u.updated_at
@@ -231,6 +236,7 @@ func (r *Repository) FindByID(ctx context.Context, params ListUsersParams, userI
 		&item.RoleCode,
 		&item.FullName,
 		&item.Username,
+		&item.FCMToken,
 		&item.Status,
 		&item.CreatedAt,
 		&item.UpdatedAt,
@@ -374,6 +380,10 @@ func (r *Repository) Update(ctx context.Context, userID string, input UpdateInpu
 		args = append(args, *input.Status)
 		setParts = append(setParts, fmt.Sprintf("status = $%d", len(args)))
 	}
+	if input.FCMToken != nil {
+		args = append(args, *input.FCMToken)
+		setParts = append(setParts, fmt.Sprintf("fcm_token = $%d", len(args)))
+	}
 	if len(setParts) == 0 {
 		return nil, ErrUserNoFieldsToUpdate
 	}
@@ -386,7 +396,7 @@ func (r *Repository) Update(ctx context.Context, userID string, input UpdateInpu
 		set %s
 		where id = $%d
 		  and deleted_at is null
-		returning id, role_id, (select code from roles where id = users.role_id), full_name, username, status, created_at, updated_at
+		returning id, role_id, (select code from roles where id = users.role_id), full_name, username, fcm_token, status, created_at, updated_at
 	`, strings.Join(setParts, ", "), len(args))
 
 	var item User
@@ -396,6 +406,7 @@ func (r *Repository) Update(ctx context.Context, userID string, input UpdateInpu
 		&item.RoleCode,
 		&item.FullName,
 		&item.Username,
+		&item.FCMToken,
 		&item.Status,
 		&item.CreatedAt,
 		&item.UpdatedAt,
