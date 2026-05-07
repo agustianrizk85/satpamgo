@@ -4,9 +4,14 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 )
 
-const maxRoomParticipants = 4
+const (
+	defaultRoomParticipants = 5
+	meetingRoomParticipants = 20
+	feedRoomParticipants    = 1000
+)
 
 var ErrRoomFull = errors.New("room is full")
 
@@ -40,7 +45,7 @@ func (h *Hub) Join(client *Client) ([]Participant, error) {
 		}
 	}
 
-	if len(room) >= maxRoomParticipants {
+	if len(room) >= maxParticipantsForRoom(client.roomID) {
 		return nil, ErrRoomFull
 	}
 
@@ -61,6 +66,17 @@ func (h *Hub) Join(client *Client) ([]Participant, error) {
 	h.broadcastParticipantsLocked(client.roomID, room)
 
 	return participants, nil
+}
+
+func maxParticipantsForRoom(roomID string) int {
+	switch roomID {
+	case "meeting-global":
+		return meetingRoomParticipants
+	case "global-patrol-feed":
+		return feedRoomParticipants
+	default:
+		return defaultRoomParticipants
+	}
 }
 
 func (h *Hub) Leave(client *Client) {
@@ -128,6 +144,74 @@ func (h *Hub) Forward(from *Client, message ClientMessage) bool {
 	return true
 }
 
+func (h *Hub) BroadcastRoom(roomID string, message ServerMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	room := h.rooms[roomID]
+	if room == nil {
+		return
+	}
+	message.RoomID = roomID
+	for _, peer := range room {
+		peer.enqueue(message)
+	}
+}
+
+func (h *Hub) BroadcastChat(from *Client, text string) {
+	h.BroadcastRoom(from.roomID, ServerMessage{
+		Type:       "chat",
+		From:       from.id,
+		SenderID:   from.userID,
+		SenderName: from.name,
+		Text:       text,
+		Timestamp:  time.Now().UnixMilli(),
+	})
+}
+
+func (h *Hub) SetMuted(client *Client, muted bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	room := h.rooms[client.roomID]
+	if room == nil || room[client.id] == nil {
+		return
+	}
+	client.isMuted = muted
+	h.broadcastParticipantsLocked(client.roomID, room)
+}
+
+func (h *Hub) Kick(host *Client, targetID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !host.isHost {
+		return false
+	}
+	room := h.rooms[host.roomID]
+	if room == nil {
+		return false
+	}
+	target := room[targetID]
+	if target == nil || target.id == host.id {
+		return false
+	}
+	target.enqueue(ServerMessage{Type: "kicked", RoomID: host.roomID, Message: "Anda dikeluarkan oleh host"})
+	delete(room, target.id)
+	close(target.send)
+	_ = target.conn.Close()
+
+	for _, peer := range room {
+		peer.enqueue(ServerMessage{Type: "peer-left", RoomID: host.roomID, From: target.id})
+	}
+	if len(room) == 0 {
+		delete(h.rooms, host.roomID)
+		return true
+	}
+	h.broadcastParticipantsLocked(host.roomID, room)
+	return true
+}
+
 func (h *Hub) broadcastParticipantsLocked(roomID string, room map[string]*Client) {
 	message := ServerMessage{
 		Type:         "participants",
@@ -145,9 +229,12 @@ func participantsFromRoom(room map[string]*Client) []Participant {
 
 	for _, client := range room {
 		participants = append(participants, Participant{
-			ID:     client.id,
-			UserID: client.userID,
-			Role:   client.role,
+			ID:       client.id,
+			UserID:   client.userID,
+			Role:     client.role,
+			FullName: client.name,
+			IsHost:   client.isHost,
+			IsMuted:  client.isMuted,
 		})
 	}
 

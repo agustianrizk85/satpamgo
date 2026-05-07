@@ -15,12 +15,14 @@ import (
 
 type Handler struct {
 	hub      *Hub
+	authRepo *auth.Repository
 	upgrader websocket.Upgrader
 }
 
-func NewHandler(hub *Hub) *Handler {
+func NewHandler(hub *Hub, authRepo *auth.Repository) *Handler {
 	return &Handler{
-		hub: hub,
+		hub:      hub,
+		authRepo: authRepo,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  maxMessageSize,
 			WriteBufferSize: maxMessageSize,
@@ -56,11 +58,20 @@ func (h *Handler) WS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user, _ := h.authRepo.FindUserByID(r.Context(), authCtx.UserID)
+	name := authCtx.UserID
+	if user != nil && strings.TrimSpace(user.FullName) != "" {
+		name = strings.TrimSpace(user.FullName)
+	}
+	isHost := auth.IsSuperUserRole(authCtx.Role)
+
 	client := &Client{
 		id:     newParticipantID(),
 		roomID: roomID,
 		userID: authCtx.UserID,
 		role:   authCtx.Role,
+		name:   name,
+		isHost: isHost,
 		conn:   conn,
 		hub:    h.hub,
 		send:   make(chan ServerMessage, sendBufferSize),
@@ -71,7 +82,7 @@ func (h *Handler) WS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.WriteJSON(ServerMessage{
 			Type:    "error",
 			RoomID:  roomID,
-			Message: "Room penuh, maksimal 4 petugas",
+			Message: "Room penuh",
 		})
 		_ = conn.Close()
 		return

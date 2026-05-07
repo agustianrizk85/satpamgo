@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"satpam-go/internal/auth"
+	"satpam-go/internal/communication"
 	"satpam-go/internal/listquery"
 	"satpam-go/internal/web"
 )
@@ -14,10 +15,11 @@ import (
 type Handler struct {
 	repo     *Repository
 	authRepo *auth.Repository
+	hub      *communication.Hub
 }
 
-func NewHandler(repo *Repository, authRepo *auth.Repository) *Handler {
-	return &Handler{repo: repo, authRepo: authRepo}
+func NewHandler(repo *Repository, authRepo *auth.Repository, hub *communication.Hub) *Handler {
+	return &Handler{repo: repo, authRepo: authRepo, hub: hub}
 }
 
 func isDateOnly(v string) bool {
@@ -627,6 +629,89 @@ func (h *Handler) ListScans(w http.ResponseWriter, r *http.Request) {
 	web.WriteJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) ListFeed(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	query, message, ok := listquery.Parse(r, listquery.Options{
+		AllowedSortBy:    []string{"scannedAt"},
+		DefaultSortBy:    "scannedAt",
+		DefaultSortOrder: listquery.SortDesc,
+		DefaultPageSize:  10,
+		MaxPageSize:      30,
+	})
+	if !ok {
+		web.WriteError(w, http.StatusBadRequest, message)
+		return
+	}
+	result, err := h.repo.ListFeed(r.Context(), current.UserID, query)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load patrol feed")
+		return
+	}
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) ToggleFeedLike(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	scanID := strings.TrimSpace(r.PathValue("scanId"))
+	if !web.IsUUID(scanID) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid scanId")
+		return
+	}
+	liked, count, err := h.repo.ToggleFeedLike(r.Context(), scanID, current.UserID)
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to update like")
+		return
+	}
+	h.broadcastFeedChanged("like", scanID)
+	web.WriteJSON(w, http.StatusOK, map[string]any{"liked": liked, "likeCount": count})
+}
+
+func (h *Handler) CreateFeedComment(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	scanID := strings.TrimSpace(r.PathValue("scanId"))
+	if !web.IsUUID(scanID) {
+		web.WriteError(w, http.StatusBadRequest, "Invalid scanId")
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Invalid body")
+		return
+	}
+	comment, count, err := h.repo.CreateFeedComment(r.Context(), scanID, current.UserID, body.Text)
+	if err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Failed to create comment")
+		return
+	}
+	h.broadcastFeedChanged("comment", scanID)
+	web.WriteJSON(w, http.StatusCreated, map[string]any{"comment": comment, "commentCount": count})
+}
+
+func (h *Handler) broadcastFeedChanged(action, scanID string) {
+	if h == nil || h.hub == nil {
+		return
+	}
+	h.hub.BroadcastRoom("global-patrol-feed", communication.ServerMessage{
+		Type:    "patrol-feed-updated",
+		Message: action,
+		Text:    scanID,
+	})
+}
+
 func (h *Handler) GetProgress(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {
@@ -706,6 +791,7 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.broadcastFeedChanged("scan", result.ID)
 	web.WriteJSON(w, http.StatusCreated, map[string]any{
 		"id":                 result.ID,
 		"patrolRunId":        result.PatrolRunID,

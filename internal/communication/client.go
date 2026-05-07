@@ -1,6 +1,7 @@
 package communication
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,13 +16,16 @@ const (
 )
 
 type Client struct {
-	id     string
-	roomID string
-	userID string
-	role   string
-	conn   *websocket.Conn
-	hub    *Hub
-	send   chan ServerMessage
+	id      string
+	roomID  string
+	userID  string
+	role    string
+	name    string
+	isHost  bool
+	isMuted bool
+	conn    *websocket.Conn
+	hub     *Hub
+	send    chan ServerMessage
 }
 
 func (c *Client) enqueue(message ServerMessage) bool {
@@ -53,20 +57,49 @@ func (c *Client) readPump() {
 		}
 
 		switch message.Type {
-		case "offer", "answer", "ice-candidate":
+		case "offer", "answer", "ice-candidate", "candidate":
 			if message.To == "" {
 				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Missing target peer"})
 				continue
 			}
+			if message.Type == "candidate" {
+				message.Type = "ice-candidate"
+			}
 			if ok := c.hub.Forward(c, message); !ok {
 				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Target peer is not in this room"})
+			}
+		case "chat":
+			text := strings.TrimSpace(message.Text)
+			if text == "" {
+				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Pesan kosong"})
+				continue
+			}
+			c.hub.BroadcastChat(c, text)
+		case "mute-state":
+			muted := message.Muted != nil && *message.Muted
+			c.hub.SetMuted(c, muted)
+		case "mute":
+			c.hub.SetMuted(c, true)
+		case "unmute":
+			c.hub.SetMuted(c, false)
+		case "kick":
+			if message.To == "" {
+				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Target kick kosong"})
+				continue
+			}
+			if ok := c.hub.Kick(c, message.To); !ok {
+				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Hanya host yang bisa kick atau target tidak ditemukan"})
 			}
 		case "ping":
 			c.enqueue(ServerMessage{Type: "pong", RoomID: c.roomID})
 		case "leave":
 			return
 		default:
-			c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Unsupported signaling message type"})
+			if message.Type == "" && message.Candidate != nil {
+				c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Unsupported signaling message type: missing type for candidate"})
+				continue
+			}
+			c.enqueue(ServerMessage{Type: "error", RoomID: c.roomID, Message: "Unsupported signaling message type: " + message.Type})
 		}
 	}
 }

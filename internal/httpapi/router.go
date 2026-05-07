@@ -123,6 +123,9 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 	mux.Handle("DELETE /api/v1/patrol/runs/{runId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteRun)))
 
 	mux.Handle("GET /api/v1/patrol/progress", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.GetProgress)))
+	mux.Handle("GET /api/v1/patrol/feed", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListFeed)))
+	mux.Handle("POST /api/v1/patrol/feed/{scanId}/like", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ToggleFeedLike)))
+	mux.Handle("POST /api/v1/patrol/feed/{scanId}/comments", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateFeedComment)))
 
 	mux.Handle("GET /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListScans)))
 	mux.Handle("POST /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateScan)))

@@ -17,6 +17,7 @@ func main() {
 	files := []string{
 		"migrations/20260313_add_submit_at.sql",
 		"migrations/20260319_add_patrol_attendance_id.sql",
+		"migrations/20260319_create_visitors.sql",
 		"migrations/20260320_create_patrol_runs.sql",
 		"migrations/20260320_drop_legacy_patrol_scan_unique.sql",
 		"migrations/20260320_fix_patrol_route_points_and_zero_runs.sql",
@@ -27,6 +28,7 @@ func main() {
 		"migrations/20260403_create_patrol_round_masters.sql",
 		"migrations/20260404_drop_patrol_scan_spot_uniques.sql",
 		"migrations/20260503_add_fcm_token_to_users.sql",
+		"migrations/20260508_create_patrol_feed_interactions.sql",
 	}
 
 	db, err := sql.Open("pgx", dsn)
