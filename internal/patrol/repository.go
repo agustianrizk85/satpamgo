@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"satpam-go/internal/auth"
 	"satpam-go/internal/listquery"
 )
+
+var ErrNoPatrolSpots = errors.New("no active patrol spots for place")
 
 var (
 	ErrRoutePointNotFound        = errors.New("route point not found")
@@ -1997,4 +2000,276 @@ func newPatrolRunID() string {
 		raw[8:10],
 		raw[10:16],
 	)
+}
+
+// ---------------------------------------------------------------------------
+// Bulk seed patrol scans (dev/admin tool). Membuat banyak patrol scan atas nama
+// satu user, pada tanggal tertentu, dengan foto acak dari foto milik user itu.
+// Self-contained: membuat patrol_runs sendiri, tidak bergantung round master.
+// ---------------------------------------------------------------------------
+
+type BulkSeedParams struct {
+	PlaceID   string
+	UserID    string
+	Dates     []string // YYYY-MM-DD
+	Count     int      // scan per tanggal
+	PhotoMode string   // "user" | "picsum" | "none"
+	Source    string   // input_source
+	Tag       string   // prefix patrol_run_id
+}
+
+type BulkSeedResult struct {
+	RunsCreated  int      `json:"runsCreated"`
+	ScansCreated int      `json:"scansCreated"`
+	Dates        []string `json:"dates"`
+	PhotoSource  string   `json:"photoSource"`
+	PlaceCode    string   `json:"placeCode"`
+	Username     string   `json:"username"`
+}
+
+func tokenizeSeed(v string) string {
+	v = strings.ToLower(v)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func seedTimeForIndex(idx, total int) (int, int) {
+	const startMin, endMin = 6 * 60, 22 * 60
+	span := endMin - startMin
+	denom := total
+	if denom < 1 {
+		denom = 1
+	}
+	minutes := startMin + (span*idx)/denom + mrand.Intn(7)
+	if minutes > endMin {
+		minutes = endMin
+	}
+	return minutes / 60, minutes % 60
+}
+
+func (r *Repository) BulkSeedScans(ctx context.Context, p BulkSeedParams) (*BulkSeedResult, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var placeCode string
+	if err := tx.QueryRow(ctx, `select place_code from places where id = $1 and deleted_at is null`, p.PlaceID).Scan(&placeCode); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrForeignKey
+		}
+		return nil, err
+	}
+	var username string
+	if err := tx.QueryRow(ctx, `select username from users where id = $1 and deleted_at is null`, p.UserID).Scan(&username); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrForeignKey
+		}
+		return nil, err
+	}
+
+	// spot patrol aktif
+	type spotRow struct{ id, code string }
+	var spots []spotRow
+	{
+		rows, err := tx.Query(ctx, `select id, spot_code from spots where place_id = $1 and status = 'ACTIVE' and deleted_at is null order by spot_code`, p.PlaceID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var s spotRow
+			if err := rows.Scan(&s.id, &s.code); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			spots = append(spots, s)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if len(spots) == 0 {
+		return nil, ErrNoPatrolSpots
+	}
+
+	// pool foto milik user
+	var pool []string
+	photoMode := strings.ToLower(strings.TrimSpace(p.PhotoMode))
+	if photoMode == "" {
+		photoMode = "user"
+	}
+	if photoMode == "user" {
+		rows, err := tx.Query(ctx, `select distinct photo_url from patrol_scans where user_id = $1 and photo_url is not null and btrim(photo_url) <> ''`, p.UserID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var u string
+			if err := rows.Scan(&u); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			pool = append(pool, u)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	effectiveMode := photoMode
+	if photoMode == "user" && len(pool) == 0 {
+		effectiveMode = "picsum"
+	}
+
+	var totalActiveSpots int
+	if err := tx.QueryRow(ctx, `select count(*) from patrol_route_points where place_id = $1 and is_active = true`, p.PlaceID).Scan(&totalActiveSpots); err != nil {
+		return nil, err
+	}
+	if totalActiveSpots == 0 {
+		totalActiveSpots = len(spots)
+	}
+
+	var baseRunNo int
+	if err := tx.QueryRow(ctx, `select coalesce(max(run_no), 0) from patrol_runs where place_id = $1 and user_id = $2`, p.PlaceID, p.UserID).Scan(&baseRunNo); err != nil {
+		return nil, err
+	}
+
+	source := strings.ToUpper(strings.TrimSpace(p.Source))
+	if source == "" {
+		source = "MOBILE_APP"
+	}
+	tag := strings.ToUpper(strings.TrimSpace(p.Tag))
+	if tag == "" {
+		tag = "SEEDU"
+	}
+	userTok := tokenizeSeed(username)
+
+	pickPhoto := func(seed string) *string {
+		switch effectiveMode {
+		case "none":
+			return nil
+		case "user":
+			v := pool[mrand.Intn(len(pool))]
+			return &v
+		default:
+			v := fmt.Sprintf("https://picsum.photos/seed/%s-%d/960/720", tokenizeSeed(seed), mrand.Intn(1_000_000_000))
+			return &v
+		}
+	}
+
+	type seedScan struct {
+		spotID, scannedAt, note string
+		photoURL                *string
+	}
+	type seedRun struct {
+		runNo              int
+		started, completed string
+		scans              []seedScan
+	}
+	runsOrder := []string{}
+	runs := map[string]*seedRun{}
+	runNoSeq := baseRunNo
+
+	for _, date := range p.Dates {
+		dateCompact := strings.ReplaceAll(date, "-", "")
+		for k := 0; k < p.Count; k++ {
+			spot := spots[k%len(spots)]
+			round := k/len(spots) + 1
+			runID := fmt.Sprintf("%s-%s-%s-R%02d-%s", tag, placeCode, dateCompact, round, userTok)
+			hh, mm := seedTimeForIndex(k, p.Count)
+			scannedAt := fmt.Sprintf("%sT%02d:%02d:%02d+07:00", date, hh, mm, (k*7)%60)
+
+			run, ok := runs[runID]
+			if !ok {
+				runNoSeq++
+				run = &seedRun{runNo: runNoSeq, started: scannedAt, completed: scannedAt}
+				runs[runID] = run
+				runsOrder = append(runsOrder, runID)
+			}
+			if scannedAt < run.started {
+				run.started = scannedAt
+			}
+			if scannedAt > run.completed {
+				run.completed = scannedAt
+			}
+			run.scans = append(run.scans, seedScan{
+				spotID:    spot.id,
+				scannedAt: scannedAt,
+				note:      fmt.Sprintf("SEED-PATROL-USER:%s:%s", username, date),
+				photoURL:  pickPhoto(fmt.Sprintf("%s-%s", runID, spot.code)),
+			})
+		}
+	}
+
+	const runSQL = `insert into patrol_runs
+		(id, place_id, user_id, attendance_id, run_no, total_active_spots, status, started_at, completed_at, created_at, updated_at)
+		values ($1,$2,$3,null,$4,$5,'completed',$6::timestamptz,$7::timestamptz,$6::timestamptz,$7::timestamptz)
+		on conflict (id) do update
+			set run_no = excluded.run_no,
+			    total_active_spots = excluded.total_active_spots,
+			    status = excluded.status,
+			    started_at = excluded.started_at,
+			    completed_at = excluded.completed_at,
+			    updated_at = excluded.updated_at`
+	const scanSQL = `insert into patrol_scans
+		(place_id, user_id, spot_id, patrol_run_id, scanned_at, submit_at, photo_url, note, input_source)
+		values ($1,$2,$3,$4,$5::timestamptz,$5::timestamptz,$6,$7,$8)
+		on conflict (patrol_run_id, spot_id) do update
+			set user_id = excluded.user_id,
+			    place_id = excluded.place_id,
+			    scanned_at = excluded.scanned_at,
+			    submit_at = excluded.submit_at,
+			    photo_url = excluded.photo_url,
+			    note = excluded.note,
+			    input_source = excluded.input_source`
+
+	runsCreated, scansCreated := 0, 0
+	for _, runID := range runsOrder {
+		run := runs[runID]
+		if _, err := tx.Exec(ctx, runSQL, runID, p.PlaceID, p.UserID, run.runNo, totalActiveSpots, run.started, run.completed); err != nil {
+			if isPgCode(err, "23503") {
+				return nil, ErrForeignKey
+			}
+			return nil, err
+		}
+		runsCreated++
+		for _, s := range run.scans {
+			if _, err := tx.Exec(ctx, scanSQL, p.PlaceID, p.UserID, s.spotID, runID, s.scannedAt, s.photoURL, s.note, source); err != nil {
+				if isPgCode(err, "23503") {
+					return nil, ErrForeignKey
+				}
+				return nil, err
+			}
+			scansCreated++
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	photoSource := effectiveMode
+	if effectiveMode == "user" {
+		photoSource = fmt.Sprintf("user:%d", len(pool))
+	}
+	return &BulkSeedResult{
+		RunsCreated:  runsCreated,
+		ScansCreated: scansCreated,
+		Dates:        p.Dates,
+		PhotoSource:  photoSource,
+		PlaceCode:    placeCode,
+		Username:     username,
+	}, nil
 }

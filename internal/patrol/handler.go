@@ -801,6 +801,86 @@ func (h *Handler) CreateScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) BulkSeedScans(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.AuthFromContext(r.Context()); !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+	var body struct {
+		PlaceID   string   `json:"placeId"`
+		UserID    string   `json:"userId"`
+		Date      string   `json:"date"`
+		Dates     []string `json:"dates"`
+		Count     int      `json:"count"`
+		PhotoMode string   `json:"photoMode"`
+		Source    string   `json:"source"`
+		Tag       string   `json:"tag"`
+	}
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.WriteError(w, http.StatusBadRequest, "Invalid body")
+		return
+	}
+	if !web.IsUUID(strings.TrimSpace(body.PlaceID)) || !web.IsUUID(strings.TrimSpace(body.UserID)) {
+		web.WriteError(w, http.StatusBadRequest, "placeId and userId are required")
+		return
+	}
+
+	dates := make([]string, 0, len(body.Dates)+1)
+	seen := map[string]bool{}
+	appendDate := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		dates = append(dates, d)
+	}
+	for _, d := range body.Dates {
+		appendDate(d)
+	}
+	appendDate(body.Date)
+	if len(dates) == 0 {
+		web.WriteError(w, http.StatusBadRequest, "date/dates is required (YYYY-MM-DD)")
+		return
+	}
+	for _, d := range dates {
+		if !isDateOnly(d) {
+			web.WriteError(w, http.StatusBadRequest, "date must be YYYY-MM-DD: "+d)
+			return
+		}
+	}
+	if body.Count < 1 || body.Count > 500 {
+		web.WriteError(w, http.StatusBadRequest, "count must be between 1 and 500")
+		return
+	}
+	if !h.requirePlaceAdminAccess(w, r, strings.TrimSpace(body.PlaceID)) {
+		return
+	}
+
+	result, err := h.repo.BulkSeedScans(r.Context(), BulkSeedParams{
+		PlaceID:   strings.TrimSpace(body.PlaceID),
+		UserID:    strings.TrimSpace(body.UserID),
+		Dates:     dates,
+		Count:     body.Count,
+		PhotoMode: body.PhotoMode,
+		Source:    body.Source,
+		Tag:       body.Tag,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoPatrolSpots):
+			web.WriteError(w, http.StatusBadRequest, "Place belum punya spot patrol aktif")
+		case errors.Is(err, ErrForeignKey):
+			web.WriteError(w, http.StatusBadRequest, "Place/user tidak ditemukan")
+		default:
+			web.WriteError(w, http.StatusInternalServerError, "Failed to bulk seed patrol scans")
+		}
+		return
+	}
+	h.broadcastFeedChanged("scan", "bulk-seed")
+	web.WriteJSON(w, http.StatusCreated, result)
+}
+
 func (h *Handler) PatchScan(w http.ResponseWriter, r *http.Request) {
 	current, ok := auth.AuthFromContext(r.Context())
 	if !ok {

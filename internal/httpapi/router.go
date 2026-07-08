@@ -129,6 +129,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 
 	mux.Handle("GET /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.ListScans)))
 	mux.Handle("POST /api/v1/patrol/scans", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.CreateScan)))
+	mux.Handle("POST /api/v1/patrol/scans/bulk-seed", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.BulkSeedScans)))
 	mux.Handle("PATCH /api/v1/patrol/scans/{scanId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.PatchScan)))
 	mux.Handle("DELETE /api/v1/patrol/scans/{scanId}", auth.RequireAuth(tokenService, http.HandlerFunc(patrolHandler.DeleteScan)))
 
