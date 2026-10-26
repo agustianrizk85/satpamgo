@@ -186,6 +186,141 @@ func isGlobalAdminRole(role string) bool {
 	}
 }
 
+type DirectoryUser struct {
+	ID        string    `json:"id"`
+	FullName  string    `json:"fullName"`
+	Username  string    `json:"username"`
+	RoleCode  string    `json:"roleCode"`
+	Status    string    `json:"status"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type DirectoryParams struct {
+	ActorUserID  string
+	ActorRole    string
+	UpdatedSince *time.Time
+}
+
+type DirectoryResult struct {
+	ServerTime     time.Time       `json:"serverTime"`
+	Users          []DirectoryUser `json:"users"`
+	DeletedUserIDs []string        `json:"deletedUserIds"`
+}
+
+// ListDirectory mengembalikan roster profil user (TANPA password hash dan
+// token) untuk sinkronisasi data offline perangkat: admin global melihat semua
+// user, selain itu hanya user dengan place role aktif di minimal satu tempat
+// tugas requester. Saat UpdatedSince diisi, respons menjadi incremental
+// (hanya user yang berubah sejak timestamp itu) ditambah tombstone id user
+// yang terhapus.
+func (r *Repository) ListDirectory(ctx context.Context, params DirectoryParams) (DirectoryResult, error) {
+	result := DirectoryResult{
+		ServerTime:     time.Now(),
+		Users:          make([]DirectoryUser, 0),
+		DeletedUserIDs: make([]string, 0),
+	}
+
+	args := make([]any, 0, 2)
+	args = append(args, params.ActorUserID)
+	actorIdx := len(args)
+
+	sinceCond := ""
+	if params.UpdatedSince != nil {
+		args = append(args, *params.UpdatedSince)
+		sinceCond = fmt.Sprintf("  and u.updated_at > $%d\n", len(args))
+	}
+
+	scopeJoin := ""
+	if !isGlobalAdminRole(params.ActorRole) {
+		// Scope requester = himpunan tempat dengan place role aktif miliknya
+		// (tanpa filter role code, sehingga satpam biasa tetap bisa menyinkron
+		// roster tempat tugasnya sendiri).
+		scopeJoin = fmt.Sprintf(`
+		join user_place_roles upr_scope
+		  on upr_scope.user_id = u.id
+		 and upr_scope.is_active = true
+		 and upr_scope.place_id in (
+			select upr_self.place_id
+			from user_place_roles upr_self
+			join places p_self on p_self.id = upr_self.place_id
+			where upr_self.user_id = $%d
+			  and upr_self.is_active = true
+			  and p_self.deleted_at is null
+		 )`, actorIdx)
+	}
+
+	rosterQuery := fmt.Sprintf(`
+		select distinct
+			u.id,
+			u.full_name,
+			u.username,
+			r.code as role_code,
+			u.status,
+			u.updated_at
+		from users u
+		join roles r on r.id = u.role_id
+		%s
+		where u.deleted_at is null
+		%s
+		order by u.full_name asc, u.id asc
+	`, scopeJoin, sinceCond)
+
+	rows, err := r.db.Query(ctx, rosterQuery, args...)
+	if err != nil {
+		return DirectoryResult{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item DirectoryUser
+		if err := rows.Scan(
+			&item.ID,
+			&item.FullName,
+			&item.Username,
+			&item.RoleCode,
+			&item.Status,
+			&item.UpdatedAt,
+		); err != nil {
+			return DirectoryResult{}, err
+		}
+		result.Users = append(result.Users, item)
+	}
+	if err := rows.Err(); err != nil {
+		return DirectoryResult{}, err
+	}
+
+	if params.UpdatedSince != nil {
+		// Tombstone hanya berupa id (tanpa data user) dan sengaja tidak
+		// dibatasi scope: perangkat cukup memakainya untuk menghapus record
+		// lokal miliknya sendiri.
+		const tombstoneQuery = `
+			select id
+			from users
+			where deleted_at is not null
+			  and updated_at > $1
+			order by id asc
+		`
+		tombstones, err := r.db.Query(ctx, tombstoneQuery, *params.UpdatedSince)
+		if err != nil {
+			return DirectoryResult{}, err
+		}
+		defer tombstones.Close()
+
+		for tombstones.Next() {
+			var id string
+			if err := tombstones.Scan(&id); err != nil {
+				return DirectoryResult{}, err
+			}
+			result.DeletedUserIDs = append(result.DeletedUserIDs, id)
+		}
+		if err := tombstones.Err(); err != nil {
+			return DirectoryResult{}, err
+		}
+	}
+
+	return result, nil
+}
+
 func (r *Repository) FindByID(ctx context.Context, params ListUsersParams, userID string) (*User, error) {
 	sql := `
 		select

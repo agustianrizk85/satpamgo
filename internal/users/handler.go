@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"satpam-go/internal/auth"
 	"satpam-go/internal/listquery"
@@ -84,6 +85,41 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		web.WriteError(w, http.StatusInternalServerError, "Failed to load users")
+		return
+	}
+
+	web.WriteJSON(w, http.StatusOK, result)
+}
+
+// SyncDirectory melayani sinkronisasi profil user untuk data offline perangkat
+// (roster tempat tugas requester; tanpa hash password dan token). Endpoint ini
+// sengaja terpisah dari GET /users yang admin-only karena dipanggil aplikasi
+// satpam biasa saat perangkat online. Query `updatedSince` (RFC3339) membuat
+// respons incremental; tanpa parameter = full roster.
+func (h *Handler) SyncDirectory(w http.ResponseWriter, r *http.Request) {
+	current, ok := auth.AuthFromContext(r.Context())
+	if !ok {
+		web.WriteError(w, http.StatusUnauthorized, "Invalid or expired token")
+		return
+	}
+
+	var updatedSince *time.Time
+	if raw := strings.TrimSpace(r.URL.Query().Get("updatedSince")); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			web.WriteError(w, http.StatusBadRequest, "updatedSince must be RFC3339 timestamp")
+			return
+		}
+		updatedSince = &parsed
+	}
+
+	result, err := h.repo.ListDirectory(r.Context(), DirectoryParams{
+		ActorUserID:  current.UserID,
+		ActorRole:    current.Role,
+		UpdatedSince: updatedSince,
+	})
+	if err != nil {
+		web.WriteError(w, http.StatusInternalServerError, "Failed to load user directory")
 		return
 	}
 

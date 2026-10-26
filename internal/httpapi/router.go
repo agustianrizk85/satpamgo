@@ -46,6 +46,7 @@ func NewRouter(authHandler *auth.Handler, userHandler *users.Handler, roleHandle
 
 	mux.Handle("GET /api/v1/users", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.ListUsers)))
 	mux.Handle("POST /api/v1/users", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.CreateUser)))
+	mux.Handle("GET /api/v1/users/sync", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.SyncDirectory)))
 	mux.Handle("GET /api/v1/users/{userId}", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.GetUser)))
 	mux.Handle("PATCH /api/v1/users/{userId}", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.PatchUser)))
 	mux.Handle("DELETE /api/v1/users/{userId}", auth.RequireAuth(tokenService, http.HandlerFunc(userHandler.DeleteUser)))
